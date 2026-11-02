@@ -1,6 +1,6 @@
 "use client";
 
-// Pencil mode for boards: Riley's "drawing board" short-form style (pencil on warm white paper, thick ink
+// Pencil mode for boards: the hand-drawn "drawing board" style (pencil on warm white paper, thick ink
 // lines, colored-pencil hatching, Archivo-style headings and handwritten notes). It's a per-board toggle:
 // switching it on changes the page and what you draw next; nothing already on the board is touched.
 

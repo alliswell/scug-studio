@@ -1,4 +1,4 @@
-// Updates tab: a per-video log of what happened, newest first. Team only (never on share links).
+// Log tab: a per-project record of what happened, newest first. Team only (never on share links).
 // People add and remove entries in the app; agents add them through the agent API (they can't remove).
 
 import { ConvexError, v } from "convex/values";
@@ -10,12 +10,12 @@ const MAX_TITLE = 300;
 const MAX_DETAILS = 20000;
 
 export const list = query({
-  args: { videoId: v.id("videos") },
-  handler: async (ctx, { videoId }) => {
+  args: { projectId: v.id("projects") },
+  handler: async (ctx, { projectId }) => {
     await requireUser(ctx);
     const rows = await ctx.db
       .query("updates")
-      .withIndex("by_video", (q) => q.eq("videoId", videoId))
+      .withIndex("by_project", (q) => q.eq("projectId", projectId))
       .order("desc")
       .collect();
     return rows.map((u) => ({
@@ -32,7 +32,7 @@ export const list = query({
   },
 });
 
-/** The Feed: the latest updates across every video, newest first. */
+/** The Feed: the latest updates across every project, newest first. */
 export const feed = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
@@ -44,19 +44,22 @@ export const feed = query({
       .take(Math.min(Math.max(limit ?? 200, 1), 500));
     // Urgent ones are always included, however old, so they stay pinned until handled
     const urgent = (await ctx.db.query("updates").collect()).filter((u) => u.urgent && !rows.some((r) => r._id === u._id));
-    const videos = new Map<string, Doc<"videos"> | null>();
+    const projects = new Map<string, Doc<"projects"> | null>();
+    const clubNames = new Map<string, string | null>();
     const out = [];
     for (const u of [...rows, ...urgent]) {
-      if (!videos.has(u.videoId)) videos.set(u.videoId, await ctx.db.get(u.videoId));
-      const video = videos.get(u.videoId);
-      if (!video) continue; // video was deleted
+      if (!projects.has(u.projectId)) projects.set(u.projectId, await ctx.db.get(u.projectId));
+      const project = projects.get(u.projectId);
+      if (!project) continue; // the project was deleted
+      if (project.clubId && !clubNames.has(project.clubId)) clubNames.set(project.clubId, (await ctx.db.get(project.clubId))?.name ?? null);
       out.push({
         id: u._id,
-        videoId: u.videoId,
-        videoTitle: video.title,
-        videoStatus: video.status,
-        videoFormat: video.format,
-        videoSponsored: video.sponsored ?? "none",
+        projectId: u.projectId,
+        projectTitle: project.title,
+        projectStage: project.stage,
+        projectType: project.type,
+        clubId: project.clubId ?? null,
+        clubName: project.clubId ? (clubNames.get(project.clubId) ?? null) : null,
         urgent: !!u.urgent,
         title: u.title,
         details: u.details,
@@ -75,7 +78,7 @@ type NewUpdate = { title: string; details?: string; link?: string | null; source
 
 export async function insertUpdate(
   ctx: MutationCtx,
-  videoId: Id<"videos">,
+  projectId: Id<"projects">,
   u: NewUpdate,
   author: { name: string | null; id: Id<"users"> | null; agent: boolean },
 ) {
@@ -85,7 +88,7 @@ export async function insertUpdate(
   if (link && !/^https?:\/\//i.test(link)) throw new ConvexError("The link must start with http:// or https://");
   const now = Date.now();
   return ctx.db.insert("updates", {
-    videoId,
+    projectId,
     title,
     details: (u.details ?? "").slice(0, MAX_DETAILS),
     link,
@@ -101,7 +104,7 @@ export async function insertUpdate(
 
 export const add = mutation({
   args: {
-    videoId: v.id("videos"),
+    projectId: v.id("projects"),
     title: v.string(),
     details: v.optional(v.string()),
     link: v.optional(v.union(v.string(), v.null())),
@@ -109,10 +112,10 @@ export const add = mutation({
     happenedAt: v.optional(v.number()),
     urgent: v.optional(v.boolean()),
   },
-  handler: async (ctx, { videoId, ...u }) => {
+  handler: async (ctx, { projectId, ...u }) => {
     const userId = await requireUser(ctx);
     const user = await ctx.db.get(userId);
-    return insertUpdate(ctx, videoId, u, { name: user?.name || user?.email || null, id: userId, agent: false });
+    return insertUpdate(ctx, projectId, u, { name: user?.name || user?.email || null, id: userId, agent: false });
   },
 });
 

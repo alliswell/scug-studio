@@ -8,9 +8,9 @@ import { linkify } from "./Brief";
 import { IconChevron, IconLink, IconPlus, IconSparkle, IconTrash } from "./icons";
 import { UrgentButton } from "./FeedView";
 
-/** The Updates tab: what happened on this video, newest first. Agents add to it; team members can too. */
-export function Updates({ videoId, readOnly }: { videoId: string; readOnly?: boolean }) {
-  const updates = useQuery(api.updates.list, { videoId: videoId as Id<"videos"> });
+/** The Log tab: what happened on this project, newest first. Agents add to it; team members can too. */
+export function Updates({ projectId, readOnly }: { projectId: string; readOnly?: boolean }) {
+  const updates = useQuery(api.updates.list, { projectId: projectId as Id<"projects"> });
   const add = useMutation(api.updates.add);
   const remove = useMutation(api.updates.remove);
   const setUrgent = useMutation(api.updates.setUrgent);
@@ -34,7 +34,7 @@ export function Updates({ videoId, readOnly }: { videoId: string; readOnly?: boo
           <AddForm
             onCancel={() => setAdding(false)}
             onSave={async (u) => {
-              await add({ videoId: videoId as Id<"videos">, ...u });
+              await add({ projectId: projectId as Id<"projects">, ...u });
               setAdding(false);
             }}
           />
@@ -45,12 +45,12 @@ export function Updates({ videoId, readOnly }: { videoId: string; readOnly?: boo
             className="mb-2 inline-flex h-[30px] items-center gap-2 text-[14px] text-(--c-t-737373) hover:text-(--c-t-1b1b1b)"
           >
             <IconPlus />
-            Add update
+            Log something
           </button>
         ))}
 
       {updates.length === 0 ? (
-        <p className="m-0 py-2 text-[14px] text-(--c-t-9a9a9a)">No updates yet. New emails, calls and approvals about this video get logged here.</p>
+        <p className="m-0 py-2 text-[14px] text-(--c-t-9a9a9a)">Nothing logged yet. Site visits, vendor calls, approvals and dates that moved go here.</p>
       ) : (
         <ol className="m-0 list-none p-0">
           {updates.map((u) => {
@@ -102,9 +102,9 @@ export function Updates({ videoId, readOnly }: { videoId: string; readOnly?: boo
                   {!readOnly && (
                     <button
                       type="button"
-                      aria-label={`Delete update: ${u.title}`}
+                      aria-label={`Delete log entry: ${u.title}`}
                       onClick={() => {
-                        if (confirm(`Delete this update? "${u.title}"`)) void remove({ id: u.id });
+                        if (confirm(`Delete this log entry? "${u.title}"`)) void remove({ id: u.id });
                       }}
                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-(--c-t-9a9a9a) opacity-0 hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-b42318) focus-visible:opacity-100 group-hover:opacity-100"
                     >
@@ -154,7 +154,7 @@ function AddForm({
     <form
       onSubmit={async (e) => {
         e.preventDefault();
-        if (!title.trim()) return setError("Give the update a title.");
+        if (!title.trim()) return setError("Say what happened.");
         if (link.trim() && !/^https?:\/\//i.test(link.trim())) return setError("The link must start with https://");
         setBusy(true);
         try {
@@ -167,7 +167,7 @@ function AddForm({
             urgent,
           });
         } catch (err) {
-          setError(err instanceof Error ? err.message : "Couldn't save the update");
+          setError(err instanceof Error ? err.message : "Couldn't save it");
           setBusy(false);
         }
       }}
@@ -180,7 +180,7 @@ function AddForm({
         <input id="update-link" value={link} onChange={(e) => setLink(e.target.value)} placeholder="Link to the conversation" aria-label="Link" inputMode="url" className={inputCls} />
       </div>
       <datalist id="update-sources">
-        {["Email", "Slack", "Notion", "Call", "Meeting", "Contract"].map((s) => (
+        {["Email", "Slack", "Call", "Site visit", "Meeting", "Vendor", "Inspection"].map((s) => (
           <option key={s} value={s} />
         ))}
       </datalist>
@@ -195,7 +195,7 @@ function AddForm({
           Cancel
         </button>
         <button type="submit" disabled={busy} className="h-8 rounded-lg bg-(--c-b-1b1b1b) px-3.5 text-[14px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333) disabled:opacity-50">
-          Add update
+          Add to the log
         </button>
       </div>
     </form>

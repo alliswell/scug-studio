@@ -11,6 +11,9 @@ import { BoardCard, BoardOverlay } from "./BoardBlock";
 
 
 export type DiffSummary = { changed: number; added: number; removed: number };
+
+/** Added words. Underlined as well as coloured, so the change survives greyscale. */
+const addedCls = "text-red-600 underline decoration-red-400 decoration-2 underline-offset-[3px]";
 type Item =
   | { kind: "same"; orig: Block; ed: Block; changed: boolean }
   | { kind: "added"; ed: Block }
@@ -61,7 +64,11 @@ export function computeDiff(original: Block[], edited: Block[]) {
   return { items, summary };
 }
 
-/** Read-only edited version, with everything that differs from the original in red. */
+/**
+ * Read-only edited version. What differs is underlined (added) or struck through (removed), with a
+ * rule down the left of every changed line. The red is only a second channel: the marks read on
+ * their own in greyscale and to anyone who doesn't separate these hues.
+ */
 export function DiffBlocks({
   original,
   edited,
@@ -101,7 +108,7 @@ export function DiffBlocks({
         let text: ReactNode;
         let prefixCls = "";
         if (it.kind === "added") {
-          text = <span className="text-red-600">{b.content}</span>;
+          text = <span className={addedCls}>{b.content}</span>;
           prefixCls = "text-red-600";
         } else {
           const o = it.orig;
@@ -111,7 +118,7 @@ export function DiffBlocks({
               ? b.content
               : diffWordsWithSpace(o.content, b.content).map((p, i) =>
                   p.added ? (
-                    <span key={i} className="text-red-600">
+                    <span key={i} className={addedCls}>
                       {p.value}
                     </span>
                   ) : p.removed ? (
@@ -134,12 +141,18 @@ export function DiffBlocks({
               data-row-id={b.id}
               data-active-row={open ? "" : undefined}
               data-has-comments={count > 0 ? "" : undefined}
+              title={colorChanged ? "The line's background colour was changed" : undefined}
               className={`relative ${rowPadClass(b.type)} ${b.color || open ? "-mx-3 rounded-lg px-3" : ""} ${colorChanged ? "ring-1 ring-red-400" : ""} ${
                 open ? "shadow-[0_0_0_1.5px_#efd88f]" : ""
               } ${mobile && count > 0 ? "pr-9" : ""}`}
               style={{ background: open ? (colorBg(b.color) ?? "var(--c-b-fdf3cf)") : colorBg(b.color) }}
             >
-              {marked && <div className="absolute -left-5 bottom-1 top-1 w-[3px] rounded bg-red-500" />}
+              {marked && (
+                <>
+                  <div className="absolute -left-5 bottom-1 top-1 w-[3px] rounded bg-red-500" aria-hidden="true" />
+                  <span className="sr-only">{it.kind === "added" ? "Added line: " : "Changed line: "}</span>
+                </>
+              )}
               <div className={`flex ${textClass(b.type)}`}>
                 <BlockPrefix type={b.type} n={numbers.get(b.id)} checked={b.checked} className={prefixCls} />
                 {b.type === "board" ? (

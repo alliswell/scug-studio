@@ -1,6 +1,6 @@
-// MCP server for Native Note (Streamable HTTP, stateless, JSON responses). Same key and the same safe
-// operations as the /agent routes. Lets tools like Composio hold the key as a connected account, so
-// agents call Native Note tools without ever seeing the key.
+// MCP server for Switchyards Studio (Streamable HTTP, stateless, JSON responses). Same key and the same
+// safe operations as the /agent routes. Lets a tool hold the key as a connected account, so agents call
+// Studio tools without ever seeing the key.
 
 import { ConvexError } from "convex/values";
 import { httpAction, type ActionCtx } from "./_generated/server";
@@ -8,56 +8,69 @@ import { internal } from "./_generated/api";
 import { authorized } from "./agentAuth";
 import { HELP } from "./agentHelp";
 import { attachFiles, resolveAttachments } from "./agentFiles";
-import { agentAddVersion, agentAddVideo, agentComment } from "./editFeed";
 
 const PROTOCOL = "2025-06-18";
 
-const RULES = `Native Note is Riley's team app for video scripts. You can change anything except deleting a script. Edit script text directly with edit_lines or edit_script: every edit saves the previous text as a version that can be restored. Read a script (get_script) before changing it, and tell the user what you changed.`;
+const RULES = `Switchyards Studio is the design studio's app for its neighborhood work clubs. A club is a location; a project is a piece of work on one (or on the network). A physical project is a build-out and runs concept → spacePlan → ffe → ordered → install → punch → open; a digital project is brand, signage artwork, web or a campaign and runs briefing → design → review → approved → shipped. Drawings and renders go through reviews: numbered rounds with marks pinned to a spot on a sheet. You can change anything except delete a project. Edit a project's document directly with edit_lines or replace_document: every edit saves the previous text as a version that can be restored. Read a project (get_project) before changing it, and tell the user what you changed. Never say a mark or a stage by its colour alone — each one has a label and a glyph; use those.`;
 
-const scriptArg = { type: "string", description: "The script's id or its share link" };
-const editVideoArg = { type: "string", description: "Edit Feed video id (from list_edit_videos), its link, or its title" };
-const videoFileArg = {
+const projectArg = { type: "string", description: "The project's id or its share link" };
+const clubArg = { type: "string", description: "The club's id or its name (an exact name first, then a single partial match)" };
+const reviewArg = { type: "string", description: "Review id (from list_reviews), its link, or its exact title" };
+const sheetArg = {
   type: "object",
-  description: "The video file: ONE of {url}, {storageId} (from get_upload_url), {base64, name}",
+  description: "One sheet: an image or a PDF. ONE of {url}, {storageId} (from get_upload_url), {base64, name}",
   properties: { url: { type: "string" }, storageId: { type: "string" }, base64: { type: "string" }, name: { type: "string" }, mime: { type: "string" } },
 };
-const statusArg = {
+const typeArg = {
   type: "string",
-  enum: ["idea", "upcoming", "inProduction", "sentToEditor", "done"],
-  description: "idea = not committed to yet, upcoming = a future video, inProduction = being made now, sentToEditor = filmed and with the editor, done = posted",
+  enum: ["physical", "digital"],
+  description: "physical = a build-out (space plan, FF&E, install); digital = brand, signage artwork, web, a campaign",
 };
-const formatArg = { type: "string", enum: ["long", "short"] };
-const sponsoredArg = { type: "string", enum: ["none", "noSponsor", "dedicated", "integration", "adRead"], description: "none = not decided yet, noSponsor = decided: no sponsor" };
-const liveDateArg = { type: ["string", "null"], description: "YYYY-MM-DD, or null to clear" };
+const stageArg = {
+  type: "string",
+  enum: ["concept", "spacePlan", "ffe", "ordered", "install", "punch", "open", "briefing", "design", "review", "approved", "shipped"],
+  description:
+    "Must belong to the project's own pipeline. physical: concept, spacePlan, ffe (FF&E spec), ordered, install, punch, open. digital: briefing, design, review, approved, shipped.",
+};
+const targetDateArg = { type: ["string", "null"], description: "Open date for a build-out, ship date for digital work. YYYY-MM-DD, or null to clear." };
+const reviewStatusArg = {
+  type: "string",
+  enum: ["inReview", "changesRequested", "approved", "archived"],
+  description: "The review's own state, never the project's stage. archived = the set was dropped.",
+};
+const markKindArg = {
+  type: "string",
+  enum: ["fix", "question", "note", "approve"],
+  description: "fix = must fix (✕), question = a question (?), note = a note (•), approve = looks right (✓). The app draws the glyph, not just a colour.",
+};
 const updateProps = {
-  title: { type: "string", description: "What happened, in a few words, e.g. \"Brand approved the script\"" },
+  title: { type: "string", description: "What happened, in a few words, e.g. \"Landlord approved the storefront\"" },
   details: { type: "string", description: "The details: what was said or decided, dates, requirements" },
   link: { type: "string", description: "Where to find the conversation (email thread, Slack message, doc URL)" },
-  source: { type: "string", description: "e.g. Email, Slack, Notion, Call" },
+  source: { type: "string", description: "e.g. Email, Slack, Call, Site visit" },
   date: { type: "string", description: "When it happened, YYYY-MM-DD or ISO time; defaults to now" },
-  urgent: { type: "boolean", description: "True if it needs a response right away (e.g. a brand waiting on an answer). Pinned to the top of the Feed until someone marks it handled." },
+  urgent: { type: "boolean", description: "True if it needs a response right away (e.g. a GC waiting on an answer). Pinned to the top of the Log until someone marks it handled." },
 };
 const lineArg = {
   type: "object",
   properties: {
     key: { type: "string", description: "Existing line key (keep it when you keep or edit that line; omit for new lines)" },
-    type: { type: "string", enum: ["p", "h1", "bullet", "number", "todo", "board"], description: "board = an Excalidraw board shown in the script; its text is the board id (from list_boards) or its /b/<id> link" },
+    type: { type: "string", enum: ["p", "h1", "bullet", "number", "todo", "board"], description: "board = an Excalidraw board shown in the document; its text is the board id (from list_boards) or its /b/<id> link" },
     text: { type: "string", description: "The line's text. Link words with [words](https://…), bold with **words**." },
-    textColor: { type: ["string", "null"], enum: ["gray", "red", "orange", "green", "blue", "purple", null], description: "Color of the text (null = default)" },
+    textColor: { type: ["string", "null"], enum: ["gray", "red", "orange", "green", "blue", "purple", null], description: "Color of the text (null = default). Never the only thing carrying a meaning — write the word too." },
     color: { type: ["string", "null"], enum: ["yellow", "blue", "green", "red", "rose", null], description: "Background color of the block (red shows as purple, rose shows as red)" },
     indent: { type: "number", description: "Sub-bullet level for bullet/number/todo lines: 1-4 (0 = top level)" },
   },
   required: ["text"],
 };
 
-const level = { type: "string", enum: ["high", "medium", "low"] };
 const colorArg = { type: "string", description: "yellow, orange, red, pink, purple, blue, teal, green, gray, or #hex. Leave out to match the board." };
 /** One thing to draw on a board (see add_to_board) */
 const boardItemArg = {
   type: "object",
   properties: {
     type: { type: "string", enum: ["text", "shape", "sticky", "arrow", "image"] },
-    id: { type: "string", description: "Your own name for this item so arrows can point at it (e.g. \"idea\")" },
+    id: { type: "string", description: "Your own name for this item so arrows can point at it (e.g. \"lobby\")" },
     text: { type: "string", description: "text and sticky: the words (\\n for new lines)" },
     label: { type: "string", description: "shape: the words inside it" },
     shape: { type: "string", enum: ["rectangle", "ellipse", "diamond"], description: "shape: defaults to the board's usual shape" },
@@ -82,48 +95,6 @@ const drawOptionArgs = {
   placement: { type: "string", enum: ["right", "below"], description: "Where the group goes next to what's there; defaults to the board's direction" },
   styleFrom: { type: "string", description: "Draw in the style of another board (its id or link), e.g. for a new board that should look like an existing one" },
 };
-/** One researched topic (see Topic opportunities in the guide) */
-const topicArg = {
-  type: "object",
-  properties: {
-    title: { type: "string", description: "Short topic name" },
-    angle: { type: "string", description: "The specific video angle / pitch" },
-    category: { type: "string", description: "News, Tutorial, Comparison, Build, Explainer or Short" },
-    format: { type: "string", enum: ["long", "short", "both"] },
-    score: { type: "number", description: "Opportunity 0-100: demand x low competition x fit for the channel x timeliness" },
-    demand: level,
-    demandNote: { type: "string", description: "Evidence for demand (what you saw)" },
-    competition: level,
-    competitionNote: { type: "string" },
-    trend: { type: "string", enum: ["breakout", "rising", "steady", "falling"] },
-    whyNow: { type: "string", description: "Why this is an opportunity now, including the gap" },
-    keywords: {
-      type: "array",
-      items: { type: "object", properties: { term: { type: "string" }, demand: level, competition: level, note: { type: "string" } }, required: ["term"] },
-    },
-    outliers: {
-      type: "array",
-      description: "Videos that did far better than their channel usually does",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          url: { type: "string" },
-          channel: { type: "string" },
-          views: { type: ["number", "null"] },
-          channelAvgViews: { type: ["number", "null"] },
-          published: { type: "string" },
-          note: { type: "string" },
-        },
-        required: ["title", "url"],
-      },
-    },
-    titleIdeas: { type: "array", items: { type: "string" } },
-    hooks: { type: "array", items: { type: "string" } },
-    sources: { type: "array", items: { type: "object", properties: { label: { type: "string" }, url: { type: "string" } }, required: ["label", "url"] } },
-  },
-  required: ["title", "angle", "category", "format", "score", "demand", "competition", "trend", "whyNow", "keywords", "outliers", "titleIdeas", "hooks", "sources"],
-};
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Tool = {
@@ -137,49 +108,61 @@ type Tool = {
 const attachmentsArg = {
   type: "array",
   description:
-    "Files to attach. Each item is ONE of: {url} a link (image/video URLs show as media); {base64, name} the file's bytes inline, stored in Native Note (under 20 MB); {storageId, name} a file you uploaded via get_upload_url (any size; use this for files on your computer). Optional mime.",
+    "Files to attach. Each item is ONE of: {url} a link (image/video URLs show as media); {base64, name} the file's bytes inline, stored in the studio (under 20 MB); {storageId, name} a file you uploaded via get_upload_url (any size; use this for files on your computer). Optional mime.",
   items: {
     type: "object",
     properties: {
       url: { type: "string" },
       base64: { type: "string", description: "Raw base64 or a data: URL" },
       storageId: { type: "string", description: "From uploading to get_upload_url's uploadUrl" },
-      name: { type: "string", description: "File name, e.g. key-art.png" },
+      name: { type: "string", description: "File name, e.g. floor-plan.pdf" },
       mime: { type: "string", description: "e.g. image/png (guessed from the name if left out)" },
     },
   },
 };
 
+const clubFields = {
+  name: { type: "string" },
+  neighborhood: { type: "string", description: "e.g. the neighborhood or the building the club sits in" },
+  city: { type: "string" },
+  address: { type: "string" },
+  status: { type: "string", enum: ["prospect", "signed", "design", "construction", "open", "closed"] },
+  openedAt: { type: ["string", "null"], description: "The day it opened, or is due to, YYYY-MM-DD" },
+  squareFeet: { type: ["number", "null"] },
+  seats: { type: ["number", "null"] },
+  notes: { type: "string", description: "Landlord, GC, lease dates — anything worth keeping on the club itself" },
+};
+
 const TOOLS: Tool[] = [
   {
     name: "read_guide",
-    description: "The full Native Note guide for agents: what a script has, the safety rules, every tool, and worked examples. Read it once before your first change.",
+    description: "The full Switchyards Studio guide for agents: clubs, projects, the two pipelines and their stages, reviews, the rules, every tool, and worked examples. Read it once before your first change.",
     inputSchema: { type: "object", properties: {} },
     annotations: { readOnlyHint: true },
     run: async () => HELP,
   },
   {
-    name: "list_scripts",
-    description: `List Native Note scripts, newest first, with status, format, live date and how many Edited versions wait for review. ${RULES}`,
-    inputSchema: { type: "object", properties: { query: { type: "string", description: "Optional title search" } } },
+    name: "list_projects",
+    description: `List projects, newest activity first, with type, stage, club, target date and how many suggested edits wait for review. Filter by club or type. ${RULES}`,
+    inputSchema: { type: "object", properties: { query: { type: "string", description: "Optional title search" }, club: clubArg, type: typeArg } },
     annotations: { readOnlyHint: true },
-    run: (ctx, a) => ctx.runQuery(internal.agent.listScripts, { query: a.query }),
+    run: (ctx, a) => ctx.runQuery(internal.agent.listProjects, { query: a.query, club: a.club, type: a.type }),
   },
   {
-    name: "get_script",
-    description: "Read one script: details, lines (each with a stable key and type), editor instructions (with keys and checked), captions per platform, brief, updates (newest first), and comments. Always read before changing a script.",
-    inputSchema: { type: "object", properties: { script: scriptArg }, required: ["script"] },
+    name: "get_project",
+    description: "Read one project: details, its club, lines (each with a stable key and type), tasks (the punch list, with keys and checked), the brief, its reviews, the log (newest first) and comments. Always read before changing a project.",
+    inputSchema: { type: "object", properties: { project: projectArg }, required: ["project"] },
     annotations: { readOnlyHint: true },
-    run: (ctx, a) => ctx.runQuery(internal.agent.script, { script: a.script }),
+    run: (ctx, a) => ctx.runQuery(internal.agent.project, { project: a.project }),
   },
   {
     name: "edit_lines",
     description:
-      "Edit a script's text directly, line by line, using line keys from get_script. Comments are kept: a replaced line keeps its comments, and comments on deleted lines are re-attached to the new line that reads most like the old one when possible. ops run in order as one change: {op:\"replace\", key, text?, type?} changes a line; {op:\"insert\", afterKey (null = top), lines:[{text, type?}]} adds lines; {op:\"delete\", key} removes a line; {op:\"move\", key, afterKey} moves one. The previous text is saved as a version first, so it can be restored. Returns the new lines with their keys.",
+      "Edit a project's document directly, line by line, using line keys from get_project. Comments are kept: a replaced line keeps its comments, and comments on deleted lines are re-attached to the new line that reads most like the old one when possible. ops run in order as one change: {op:\"replace\", key, text?, type?} changes a line; {op:\"insert\", afterKey (null = top), lines:[{text, type?}]} adds lines; {op:\"delete\", key} removes a line; {op:\"move\", key, afterKey} moves one. The previous text is saved as a version first, so it can be restored. Returns the new lines with their keys.",
     inputSchema: {
       type: "object",
       properties: {
-        script: scriptArg,
+        project: projectArg,
         agentName: { type: "string" },
         ops: {
           type: "array",
@@ -190,7 +173,7 @@ const TOOLS: Tool[] = [
               key: { type: "string" },
               afterKey: { type: ["string", "null"] },
               text: { type: "string" },
-              type: { type: "string", enum: ["p", "h1", "bullet", "number", "todo", "board"], description: "board = an Excalidraw board shown in the script; its text is the board id (from list_boards) or its /b/<id> link" },
+              type: { type: "string", enum: ["p", "h1", "bullet", "number", "todo", "board"], description: "board = an Excalidraw board shown in the document; its text is the board id (from list_boards) or its /b/<id> link" },
               textColor: { type: ["string", "null"], enum: ["gray", "red", "orange", "green", "blue", "purple", null] },
               color: { type: ["string", "null"], enum: ["yellow", "blue", "green", "red", "rose", null] },
               indent: { type: "number", description: "Sub-bullet level 0-4 (replace)" },
@@ -200,77 +183,71 @@ const TOOLS: Tool[] = [
           },
         },
       },
-      required: ["script", "ops"],
+      required: ["project", "ops"],
     },
     run: (ctx, a) => ctx.runMutation(internal.agent.editLines, a),
   },
   {
-    name: "edit_script",
+    name: "replace_document",
     description:
-      "Rewrite a script's whole text directly. `lines` is the full script in order: keep a line's key to keep that line (and its comments), omit key for new lines, leave lines out to delete them. The previous text is saved as a version first. Use for big rewrites; for small changes use edit_lines.",
+      "Rewrite a project's whole document directly. `lines` is the document in order: keep a line's key to keep that line (and its comments), omit key for new lines, leave lines out to delete them. The previous text is saved as a version first. Use for big rewrites; for small changes use edit_lines.",
     inputSchema: {
       type: "object",
-      properties: { script: scriptArg, agentName: { type: "string" }, lines: { type: "array", items: lineArg } },
-      required: ["script", "lines"],
+      properties: { project: projectArg, agentName: { type: "string" }, lines: { type: "array", items: lineArg } },
+      required: ["project", "lines"],
     },
-    run: (ctx, a) => ctx.runMutation(internal.agent.editScript, a),
+    run: (ctx, a) => ctx.runMutation(internal.agent.replaceDocument, a),
   },
   {
     name: "list_versions",
-    description: "Earlier versions of a script's text (newest first), with when and by whom each was replaced.",
-    inputSchema: { type: "object", properties: { script: scriptArg }, required: ["script"] },
+    description: "Earlier versions of a project's document (newest first), with when and by whom each was replaced.",
+    inputSchema: { type: "object", properties: { project: projectArg }, required: ["project"] },
     annotations: { readOnlyHint: true },
     run: (ctx, a) => ctx.runQuery(internal.agent.listVersions, a),
   },
   {
     name: "restore_version",
-    description: "Bring back an earlier version of a script's text (from list_versions). The current text is saved as a version first.",
-    inputSchema: { type: "object", properties: { script: scriptArg, versionId: { type: "string" }, agentName: { type: "string" } }, required: ["script", "versionId"] },
+    description: "Bring back an earlier version of a project's document (from list_versions). The current text is saved as a version first.",
+    inputSchema: { type: "object", properties: { project: projectArg, versionId: { type: "string" }, agentName: { type: "string" } }, required: ["project", "versionId"] },
     run: (ctx, a) => ctx.runMutation(internal.agent.restoreVersion, a),
   },
   {
-    name: "delete_editor_instruction",
-    description: "Remove one editor instruction by its key (from get_script).",
-    inputSchema: { type: "object", properties: { script: scriptArg, key: { type: "string" } }, required: ["script", "key"] },
-    run: (ctx, a) => ctx.runMutation(internal.agent.deleteInstruction, a),
-  },
-  {
-    name: "remove_caption",
-    description: "Remove one platform's caption from the Captions tab.",
-    inputSchema: { type: "object", properties: { script: scriptArg, platform: { type: "string" } }, required: ["script", "platform"] },
-    run: (ctx, a) => ctx.runMutation(internal.agent.removeCaption, a),
+    name: "delete_project_task",
+    description: "Remove one task from a project's punch list by its key (from get_project).",
+    inputSchema: { type: "object", properties: { project: projectArg, key: { type: "string" } }, required: ["project", "key"] },
+    run: (ctx, a) => ctx.runMutation(internal.agent.deleteTask, a),
   },
   {
     name: "remove_brief_links",
     description: "Remove links from the Brief tab by URL.",
-    inputSchema: { type: "object", properties: { script: scriptArg, urls: { type: "array", items: { type: "string" } } }, required: ["script", "urls"] },
+    inputSchema: { type: "object", properties: { project: projectArg, urls: { type: "array", items: { type: "string" } } }, required: ["project", "urls"] },
     run: (ctx, a) => ctx.runMutation(internal.agent.removeBriefLinks, a),
   },
   {
-    name: "suggest_script_edit",
+    name: "suggest_project_edit",
     description:
-      "Propose new text for a person to review instead of editing directly (only when the user wants to approve changes first; normally use edit_lines / edit_script). `lines` is the WHOLE script as you want it, in order. Keep a line's key when you keep or edit it; omit key for new lines; existing lines you leave out show as removed. It is saved as an \"Edited version\" (changes in red) and nothing changes until a person clicks \"Use this version\". Sending again with the same agentName replaces your pending suggestion. Afterwards tell the user to review the Edited version button at the top right of the script.",
+      "Propose new text for a person to review instead of editing directly (only when the user wants to approve changes first; normally use edit_lines / replace_document). `lines` is the WHOLE document as you want it, in order. Keep a line's key when you keep or edit it; omit key for new lines; existing lines you leave out show as removed. It is saved as an \"Edited version\" (changes in red) and nothing changes until a person clicks \"Use this version\". Sending again with the same agentName replaces your pending suggestion. Afterwards tell the user to review the Edited version button at the top right of the project.",
     inputSchema: {
       type: "object",
-      properties: { script: scriptArg, agentName: { type: "string", description: "Your name, e.g. Claude" }, lines: { type: "array", items: lineArg } },
-      required: ["script", "lines"],
+      properties: { project: projectArg, agentName: { type: "string", description: "Your name, e.g. Claude" }, lines: { type: "array", items: lineArg } },
+      required: ["project", "lines"],
     },
     run: (ctx, a) => ctx.runMutation(internal.agent.suggestEdit, a),
   },
   {
-    name: "comment_on_script",
-    description: "Comment on a whole script, or on one line (by blockKey from get_script, or by part of the line's text with lineContains). Can attach images, videos, PDFs or any file: by link, inline base64, or an uploaded file (see get_upload_url). Shows with an Agent badge. Returns the comment id.",
+    name: "comment_on_project",
+    description: "Comment on a whole project, or on one line (by blockKey from get_project, or by part of the line's text with lineContains). Can attach images, renders, PDFs or any file: by link, inline base64, or an uploaded file (see get_upload_url). Shows with an Agent badge. Returns the comment id.",
     inputSchema: {
       type: "object",
       properties: {
-        script: scriptArg,
+        project: projectArg,
         text: { type: "string" },
         agentName: { type: "string" },
         blockKey: { type: "string" },
         lineContains: { type: "string" },
         attachments: attachmentsArg,
       },
-      required: ["script", "text"],
+      required: ["project", "text"],
     },
     run: async (ctx, a) => ({
       id: await ctx.runMutation(internal.comments.addAgent, { ...a, attachments: await resolveAttachments(ctx, a.attachments) }),
@@ -279,97 +256,75 @@ const TOOLS: Tool[] = [
   {
     name: "attach_files",
     description:
-      "Add images, videos, PDFs or any files to an existing comment (comment id from comment_on_script or get_script). Same attachment shapes as comment_on_script. Only adds; never removes.",
+      "Add images, renders, PDFs or any files to an existing comment (comment id from comment_on_project or get_project). Same attachment shapes as comment_on_project. Only adds; never removes.",
     inputSchema: { type: "object", properties: { comment: { type: "string" }, attachments: attachmentsArg }, required: ["comment", "attachments"] },
     run: (ctx, a) => attachFiles(ctx, a.comment, a.attachments ?? []),
   },
   {
     name: "get_upload_url",
     description:
-      "For a file on your own computer (any size): returns a one-time uploadUrl. POST the raw bytes there, e.g. curl -s -X POST -H 'Content-Type: image/png' --data-binary @shot.png '<uploadUrl>', which answers {\"storageId\":\"...\"}. Then attach it with comment_on_script or attach_files: attachments [{storageId, name}].",
+      "For a file on your own computer (any size): returns a one-time uploadUrl. POST the raw bytes there, e.g. curl -s -X POST -H 'Content-Type: application/pdf' --data-binary @plan.pdf '<uploadUrl>', which answers {\"storageId\":\"...\"}. Then use it as {storageId, name} in comment_on_project, attach_files, start_review or add_review_round.",
     inputSchema: { type: "object", properties: {} },
     run: async (ctx) => ({ uploadUrl: await ctx.runMutation(internal.agentFiles.uploadUrl, {}) }),
   },
   {
     name: "move_comment",
     description:
-      "Move any comment to another line (toKey from get_script, or lineContains = part of the line's text), or onto the whole script (give neither). Use after an edit to put comments back on the right line; get_script marks comments that are onRemovedLine.",
+      "Move any comment to another line (toKey from get_project, or lineContains = part of the line's text), or onto the whole project (give neither). Use after an edit to put comments back on the right line; get_project marks comments that are onRemovedLine.",
     inputSchema: {
       type: "object",
-      properties: { script: scriptArg, commentId: { type: "string" }, toKey: { type: "string" }, lineContains: { type: "string" } },
-      required: ["script", "commentId"],
+      properties: { project: projectArg, commentId: { type: "string" }, toKey: { type: "string" }, lineContains: { type: "string" } },
+      required: ["project", "commentId"],
     },
     run: (ctx, a) => ctx.runMutation(internal.agent.moveComment, a),
   },
   {
     name: "update_comment",
     description: "Rewrite the text of a comment an agent wrote (people's comments can be moved, not rewritten).",
-    inputSchema: { type: "object", properties: { script: scriptArg, commentId: { type: "string" }, text: { type: "string" } }, required: ["script", "commentId", "text"] },
+    inputSchema: { type: "object", properties: { project: projectArg, commentId: { type: "string" }, text: { type: "string" } }, required: ["project", "commentId", "text"] },
     run: (ctx, a) => ctx.runMutation(internal.agent.updateComment, a),
   },
   {
     name: "delete_comment",
     description: "Delete a comment an agent wrote.",
-    inputSchema: { type: "object", properties: { script: scriptArg, commentId: { type: "string" } }, required: ["script", "commentId"] },
+    inputSchema: { type: "object", properties: { project: projectArg, commentId: { type: "string" } }, required: ["project", "commentId"] },
     run: (ctx, a) => ctx.runMutation(internal.agent.deleteComment, a),
   },
   {
-    name: "add_editor_instructions",
-    description: "Add to-do items to a script's instructions for the video editor.",
-    inputSchema: { type: "object", properties: { script: scriptArg, items: { type: "array", items: { type: "string" } } }, required: ["script", "items"] },
-    run: (ctx, a) => ctx.runMutation(internal.agent.addInstructions, a),
+    name: "add_project_tasks",
+    description: "Add tasks to a project's punch list (the Tasks tab): snags to fix, drawings to issue, things to order.",
+    inputSchema: { type: "object", properties: { project: projectArg, items: { type: "array", items: { type: "string" } } }, required: ["project", "items"] },
+    run: (ctx, a) => ctx.runMutation(internal.agent.addTasks, a),
   },
   {
-    name: "update_editor_instruction",
-    description: "Edit one existing editor instruction: change its text and/or check it off (checked true) or uncheck it. Use the instruction's key from get_script. Instructions can't be removed.",
+    name: "update_project_task",
+    description: "Edit one task on a project's punch list: change its text and/or tick it off (checked true) or untick it. Use the task's key from get_project.",
     inputSchema: {
       type: "object",
-      properties: { script: scriptArg, key: { type: "string", description: "The instruction's key from get_script" }, text: { type: "string" }, checked: { type: "boolean" } },
-      required: ["script", "key"],
+      properties: { project: projectArg, key: { type: "string", description: "The task's key from get_project" }, text: { type: "string" }, checked: { type: "boolean" } },
+      required: ["project", "key"],
     },
-    run: (ctx, a) => ctx.runMutation(internal.agent.updateInstruction, a),
-  },
-  {
-    name: "set_caption",
-    description:
-      "Add or update one platform's caption on the Captions tab (e.g. Instagram, TikTok, YouTube, YouTube Shorts, X, LinkedIn, Facebook, Threads, or any name). The platform is matched by name, case-insensitive, and added if missing. Only the parts you pass change. Custom fields are matched by label: new labels are added, existing labels get the new value. Set posted true once it's been posted. Applies immediately. Platforms and fields can't be removed.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        script: scriptArg,
-        platform: { type: "string", description: "e.g. Instagram" },
-        caption: { type: "string" },
-        linkInBio: { type: "string" },
-        posted: { type: "boolean" },
-        fields: {
-          type: "array",
-          description: "Custom fields, e.g. [{\"label\":\"Hashtags\",\"value\":\"#ai #claude\"}]",
-          items: { type: "object", properties: { label: { type: "string" }, value: { type: "string" } }, required: ["label", "value"] },
-        },
-      },
-      required: ["script", "platform"],
-    },
-    run: (ctx, a) => ctx.runMutation(internal.agent.setCaption, a),
+    run: (ctx, a) => ctx.runMutation(internal.agent.updateTask, a),
   },
   {
     name: "set_brief",
     description:
-      "Write the Brief tab (e.g. a marketing or sponsor brief). mode \"append\" (default) adds your text to the end; \"replace\" swaps the whole brief, so only replace when the user asked. Applies immediately.",
+      "Write the Brief tab: scope, constraints, what done looks like. mode \"append\" (default) adds your text to the end; \"replace\" swaps the whole brief, so only replace when the user asked. Applies immediately.",
     inputSchema: {
       type: "object",
-      properties: { script: scriptArg, text: { type: "string" }, mode: { type: "string", enum: ["append", "replace"] } },
-      required: ["script", "text"],
+      properties: { project: projectArg, text: { type: "string" }, mode: { type: "string", enum: ["append", "replace"] } },
+      required: ["project", "text"],
     },
     run: (ctx, a) => ctx.runMutation(internal.agent.setBrief, a),
   },
   {
-    name: "add_ideas",
+    name: "add_references",
     description:
-      "Save ideas to Mymind, Riley's idea board: tweets/X posts, images, videos (YouTube, TikTok, Instagram reels, video files), any link, or a plain note. Each idea is a link and/or a note (what it is and why it's interesting). Send up to 200 at once, e.g. when importing bookmarks; links already saved aren't duplicated. date (YYYY-MM-DD) is when it was saved/bookmarked, if known.",
+      "Save references to the studio's reference board: product and furniture links, images, posts, any link, or a plain note. Each one is a link and/or a note (what it is and why it's worth keeping). Send up to 200 at once, e.g. when importing bookmarks; links already saved aren't duplicated. date (YYYY-MM-DD) is when it was saved, if known.",
     inputSchema: {
       type: "object",
       properties: {
-        ideas: {
+        references: {
           type: "array",
           items: {
             type: "object",
@@ -378,74 +333,140 @@ const TOOLS: Tool[] = [
         },
         agentName: { type: "string" },
       },
-      required: ["ideas"],
+      required: ["references"],
     },
-    run: (ctx, a) => ctx.runMutation(internal.agent.addIdeas, a),
+    run: (ctx, a) => ctx.runMutation(internal.agent.addReferences, a),
   },
   {
-    name: "list_ideas",
-    description: "Search or list Mymind ideas (newest first). Use to check what's already saved or find an idea.",
+    name: "list_references",
+    description: "Search or list the reference board (newest first). Use to check what's already saved or find a reference.",
     inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } } },
     annotations: { readOnlyHint: true },
-    run: (ctx, a) => ctx.runQuery(internal.agent.listIdeas, a),
+    run: (ctx, a) => ctx.runQuery(internal.agent.listReferences, a),
   },
   {
-    name: "list_edit_videos",
-    description:
-      "Edit Feed: the short-form videos being edited (newest activity first), each with its status (editing / ready / posted), latest version number, whether edits were requested, and how many open comments are on the latest version. Set editsRequested true to see only videos waiting for a new version. Archived videos are left out unless status is archived: Riley archives videos he dropped and says why in the comments, so read those (get_edit_video) to learn what to avoid.",
-    inputSchema: { type: "object", properties: { status: { type: "string", enum: ["editing", "ready", "posted", "archived"] }, editsRequested: { type: "boolean" } } },
+    name: "list_clubs",
+    description: "Every club: name, neighborhood, city, address, status (prospect / signed / design / construction / open / closed), open date, square feet, seats, notes, and how many projects each has (projectCount, activeCount = not yet finished).",
+    inputSchema: { type: "object", properties: {} },
     annotations: { readOnlyHint: true },
-    run: (ctx, a) => ctx.runQuery(internal.editFeed.listForAgent, a),
+    run: (ctx) => ctx.runQuery(internal.clubs.listForAgent, {}),
   },
   {
-    name: "get_edit_video",
-    description:
-      "Edit Feed: one video with every version (v1, v2, …, each with a downloadable videoUrl and a note of what changed) and all comments. toDo lists the open comments on the latest version in video order (at = seconds into the video): that's what to change for the next version.",
-    inputSchema: { type: "object", properties: { video: editVideoArg }, required: ["video"] },
+    name: "get_club",
+    description: "One club: its details, every project on it (with type, stage and target date) and every review filed against it.",
+    inputSchema: { type: "object", properties: { club: clubArg }, required: ["club"] },
     annotations: { readOnlyHint: true },
-    run: (ctx, a) => ctx.runQuery(internal.editFeed.getForAgent, a),
+    run: (ctx, a) => ctx.runQuery(internal.clubs.getForAgent, a),
   },
   {
-    name: "add_edit_video",
+    name: "create_club",
+    description: "Add a club (a location). Only name is required; status defaults to prospect. Only when asked.",
+    inputSchema: { type: "object", properties: { ...clubFields }, required: ["name"] },
+    run: (ctx, a) => ctx.runMutation(internal.clubs.createForAgent, a),
+  },
+  {
+    name: "update_club",
+    description: "Change a club's details. Only the fields you send change. A club can't be deleted while it still has projects.",
+    inputSchema: { type: "object", properties: { club: clubArg, ...clubFields }, required: ["club"] },
+    run: (ctx, a) => ctx.runMutation(internal.clubs.updateForAgent, a),
+  },
+  {
+    name: "list_reviews",
     description:
-      "Edit Feed: add a finished short-form video as v1 (it goes in the Editing column). video is ONE of {url} (a direct link to the file), {storageId} (uploaded via get_upload_url, any size) or {base64, name} (under 20 MB). Optionally link the script it was made from.",
+      "Reviews: sets of visuals (renders, floor plans, elevations, finish boards, mockups) being carried through numbered rounds, newest activity first. Each shows its status, the latest round, whether changes were requested, and how many marks are still open on the latest round. Filter by project, club, status, or changesRequested true to see only what is waiting on a new round. Archived sets are left out unless status is archived: read those to learn what was dropped and why.",
     inputSchema: {
       type: "object",
-      properties: { title: { type: "string" }, video: videoFileArg, note: { type: "string", description: "What this cut is" }, script: scriptArg, agentName: { type: "string" } },
-      required: ["title", "video"],
+      properties: { status: reviewStatusArg, changesRequested: { type: "boolean" }, project: projectArg, club: clubArg },
     },
-    run: (ctx, a) => agentAddVideo(ctx, a),
+    annotations: { readOnlyHint: true },
+    run: (ctx, a) => ctx.runQuery(internal.reviews.listForAgent, a),
   },
   {
-    name: "add_edit_version",
+    name: "get_review",
     description:
-      "Edit Feed: upload the next version of a video (v2, v3, … no limit) after making the requested edits. It clears the edit request, marks the latest version's open comments as done (set resolveComments false to keep them open) and moves the video to Editing. Write in note what you changed.",
-    inputSchema: {
-      type: "object",
-      properties: { video: editVideoArg, file: videoFileArg, note: { type: "string", description: "What changed in this version" }, agentName: { type: "string" }, resolveComments: { type: "boolean" } },
-      required: ["video", "file"],
-    },
-    run: (ctx, a) => agentAddVersion(ctx, a),
+      "One review: every round (v1, v2, … each with its sheets' download URLs and a note of what changed) and every mark. Each mark says where it is in words (\"v2 sheet 1, 32% across and 61% down\"), its kind (fix / question / note / approve) and its text. toDo lists the marks still open on the latest round, in reading order down each sheet: that's what the next round has to answer.",
+    inputSchema: { type: "object", properties: { review: reviewArg }, required: ["review"] },
+    annotations: { readOnlyHint: true },
+    run: (ctx, a) => ctx.runQuery(internal.reviews.getForAgent, a),
   },
   {
-    name: "comment_on_edit_video",
-    description: "Edit Feed: comment on a video's version (latest by default), optionally at a moment (at = seconds into the video), with images or videos attached. Shows with an Agent badge. Only when asked.",
+    name: "start_review",
+    description:
+      "Start a review with its first round (v1). files is one or more sheets, in order — a plan set is several, a render is one. Only images and PDFs are accepted. Link it to a project and/or a club so it shows on their pages.",
     inputSchema: {
       type: "object",
-      properties: { video: editVideoArg, text: { type: "string" }, version: { type: "number" }, at: { type: "number", description: "Seconds into the video" }, attachments: attachmentsArg, agentName: { type: "string" } },
-      required: ["video", "text"],
+      properties: {
+        title: { type: "string" },
+        files: { type: "array", items: sheetArg },
+        note: { type: "string", description: "What this set is" },
+        project: projectArg,
+        club: clubArg,
+        agentName: { type: "string" },
+      },
+      required: ["title", "files"],
     },
-    run: (ctx, a) => agentComment(ctx, a),
+    run: (ctx, a) => ctx.runAction(internal.reviews.createForAgent, a),
   },
   {
-    name: "set_edit_status",
-    description: "Edit Feed: move a video to editing, ready (Ready to post), posted or archived. Only when asked.",
-    inputSchema: { type: "object", properties: { video: editVideoArg, status: { type: "string", enum: ["editing", "ready", "posted", "archived"] } }, required: ["video", "status"] },
-    run: (ctx, a) => ctx.runMutation(internal.editFeed.setStatusForAgent, a),
+    name: "add_review_round",
+    description:
+      "Post the next round of a review (v2, v3, … no limit) once the marks have been answered. It clears any request for changes, resolves the previous round's open marks (set resolveMarks false to keep them open) and puts the review back in review. Write in note what changed. This never touches the project's stage.",
+    inputSchema: {
+      type: "object",
+      properties: { review: reviewArg, files: { type: "array", items: sheetArg }, note: { type: "string", description: "What changed in this round" }, agentName: { type: "string" }, resolveMarks: { type: "boolean" } },
+      required: ["review", "files"],
+    },
+    run: (ctx, a) => ctx.runAction(internal.reviews.addRoundForAgent, a),
+  },
+  {
+    name: "mark_review",
+    description:
+      "Pin a mark to a sheet in a review round. fileIndex is which sheet (0 = the first), page is the page within a PDF sheet (1 for an image). x and y are fractions of the sheet, 0-1 from its top left — x 0.5, y 0.25 is halfway across and a quarter down — so the mark survives any zoom. rects marks an area instead. Say the kind: fix, question, note or approve. Only when asked.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        review: reviewArg,
+        text: { type: "string" },
+        roundNumber: { type: "number", description: "Defaults to the latest round" },
+        fileIndex: { type: "number", description: "Which sheet in that round, 0-based. Defaults to 0." },
+        page: { type: "number", description: "1-based page within a PDF sheet; 1 for an image" },
+        x: { type: "number", description: "Across the sheet, 0-1" },
+        y: { type: "number", description: "Down the sheet, 0-1" },
+        rects: {
+          type: "array",
+          description: "An area instead of a point; each box is {x, y, w, h} as fractions of the sheet",
+          items: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, w: { type: "number" }, h: { type: "number" } }, required: ["x", "y", "w", "h"] },
+        },
+        quote: { type: "string", description: "Text selected on a PDF sheet, when the mark is about words" },
+        markKind: markKindArg,
+        attachments: attachmentsArg,
+        agentName: { type: "string" },
+      },
+      required: ["review", "text"],
+    },
+    run: (ctx, a) => ctx.runAction(internal.reviews.markForAgent, a),
+  },
+  {
+    name: "resolve_mark",
+    description: "Tick a mark off once it's been dealt with, or re-open it (resolved false). Mark ids come from get_review. A new round resolves the round before it on its own, so use this for one-off marks.",
+    inputSchema: { type: "object", properties: { mark: { type: "string", description: "Mark id from get_review" }, resolved: { type: "boolean", description: "Default true" } }, required: ["mark"] },
+    run: (ctx, a) => ctx.runMutation(internal.agent.resolveMark, a),
+  },
+  {
+    name: "set_review_status",
+    description: "Move a review to inReview, changesRequested (note = what is being asked for), approved or archived. Only when asked. This is the review's own status; it never changes the project's stage.",
+    inputSchema: { type: "object", properties: { review: reviewArg, status: reviewStatusArg, note: { type: "string" }, agentName: { type: "string" } }, required: ["review", "status"] },
+    run: (ctx, a) => ctx.runMutation(internal.reviews.setStatusForAgent, a),
+  },
+  {
+    name: "approve_review",
+    description: "Sign a review off: status approved, stamped with who and when. Only when the user asked for it to be approved.",
+    inputSchema: { type: "object", properties: { review: reviewArg, agentName: { type: "string" } }, required: ["review"] },
+    run: (ctx, a) => ctx.runMutation(internal.reviews.setStatusForAgent, { ...a, status: "approved" as const }),
   },
   {
     name: "list_pdfs",
-    description: "The PDFs app: papers and documents saved in Native Note to read and mark up. Lists them (newest first) with id, title, pages, authors, a line on what each is, and its link. query searches titles, authors and descriptions.",
+    description: "The PDFs app: drawing sets, permit sets, vendor cutsheets and papers saved to read and mark up. Lists them (newest first) with id, title, pages, authors, a line on what each is, and its link. query searches titles, authors and descriptions.",
     inputSchema: { type: "object", properties: { query: { type: "string" } } },
     annotations: { readOnlyHint: true },
     run: (ctx, a) => ctx.runQuery(internal.pdfs.listForAgent, a),
@@ -460,7 +481,7 @@ const TOOLS: Tool[] = [
   {
     name: "add_pdf",
     description:
-      "Save a PDF to the PDFs app. Give ONE of: url (a direct link to the .pdf, or an arXiv abs/pdf page link, or a GitHub blob link to a .pdf — Native Note downloads it), storageId (a file you uploaded via get_upload_url), or base64 (small files). Also set title (the real paper title), authors, and about (one or two plain sentences on what it is and why it's worth reading). To add a paper someone mentions, find its PDF first (arXiv, the project's GitHub or site). Returns its id and link.",
+      "Save a PDF to the PDFs app. Give ONE of: url (a direct link to the .pdf, which the studio downloads), storageId (a file you uploaded via get_upload_url), or base64 (small files). Also set title (the real document title), authors (the firm or vendor) and about (one or two plain sentences on what it is and why it matters). Returns its id and link.",
     inputSchema: {
       type: "object",
       properties: {
@@ -489,7 +510,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "list_scratchboards",
-    description: "Scratchboards: Riley's drawings in his short-form 'drawing board' style (pencil on warm paper, hand-inked lines, colored-pencil fills, Archivo headings, handwritten notes). Separate from Excalidraw boards.",
+    description: "Scratchboards: hand-drawn sketches in the studio's own pencil-on-paper style (hand-inked lines, colored-pencil fills, Archivo headings, handwritten notes). Separate from Excalidraw boards.",
     inputSchema: { type: "object", properties: { query: { type: "string" } } },
     annotations: { readOnlyHint: true },
     run: (ctx, a) => ctx.runQuery(internal.scratchboards.listForAgent, a),
@@ -546,22 +567,22 @@ const TOOLS: Tool[] = [
   },
   {
     name: "list_boards",
-    description: "List the team's Excalidraw boards (newest first), optionally searching their titles and contents. Returns ids and links.",
+    description: "List the studio's Excalidraw boards — space plans, bubble diagrams, adjacency studies, furniture layouts (newest first), optionally searching their titles and contents. Returns ids and links.",
     inputSchema: { type: "object", properties: { query: { type: "string" } } },
     annotations: { readOnlyHint: true },
     run: (ctx, a) => ctx.runQuery(internal.boards.listForAgent, a),
   },
   {
     name: "pin_board",
-    description: "Pin a board to the sidebar in Native Note (pinned: false unpins). Only when the user asked.",
+    description: "Pin a board to the sidebar (pinned: false unpins). Only when the user asked.",
     inputSchema: { type: "object", properties: { board: { type: "string", description: "Board id or its /b/<id> link" }, pinned: { type: "boolean", description: "Default true" } }, required: ["board"] },
     run: (ctx, a) => ctx.runMutation(internal.boards.setPinnedForAgent, a),
   },
   {
-    name: "pin_script",
-    description: "Pin a script to the sidebar and the top of the Scripts views (pinned: false unpins). Only when the user asked.",
-    inputSchema: { type: "object", properties: { script: scriptArg, pinned: { type: "boolean", description: "Default true" } }, required: ["script"] },
-    run: (ctx, a) => ctx.runMutation(internal.agent.setScriptPinned, a),
+    name: "pin_project",
+    description: "Pin a project to the sidebar and the top of the project views (pinned: false unpins). Only when the user asked.",
+    inputSchema: { type: "object", properties: { project: projectArg, pinned: { type: "boolean", description: "Default true" } }, required: ["project"] },
+    run: (ctx, a) => ctx.runMutation(internal.agent.setProjectPinned, a),
   },
   {
     name: "get_board",
@@ -628,105 +649,44 @@ const TOOLS: Tool[] = [
     run: (ctx, a) => ctx.runMutation(internal.boards.editForAgent, a),
   },
   {
-    name: "list_topics",
-    description:
-      "List Topic opportunities (researched YouTube video ideas), best score first. Filter by status (new, saved = Riley marked it Might do, used = made into a script, dismissed) or search. Set full to get keywords, outlier videos, hooks and sources too.",
-    inputSchema: {
-      type: "object",
-      properties: { status: { type: "string", enum: ["new", "saved", "used", "dismissed"] }, query: { type: "string" }, full: { type: "boolean" } },
-    },
-    annotations: { readOnlyHint: true },
-    run: (ctx, a) => ctx.runQuery(internal.topics.listForAgent, a),
-  },
-  {
-    name: "add_topics",
-    description:
-      "Add researched YouTube topic opportunities (up to 60 at once). Never replaces anything: a topic whose title matches an existing one is refreshed (its status, notes and earlier research history are kept) and new titles are added. Each research pass is a run: the first call returns a run id; pass it as run on later calls in the same pass, then call finish_topic_run with a summary. Never invent numbers: outlier views must be what you actually saw at that URL, and leave views/channelAvgViews null when unknown.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        topics: { type: "array", items: topicArg },
-        agentName: { type: "string" },
-        run: { type: "string", description: "Run id from the first add_topics call of this research pass (leave out to start a new run)" },
-      },
-      required: ["topics"],
-    },
-    run: (ctx, a) => ctx.runMutation(internal.topics.upsertForAgent, a),
-  },
-  {
-    name: "finish_topic_run",
-    description: "End a research run with a short summary of what changed (new topics, big score moves, news on the topics Riley marked Might do). Shown at the top of the app.",
-    inputSchema: { type: "object", properties: { run: { type: "string" }, summary: { type: "string" } }, required: ["run", "summary"] },
-    run: (ctx, a) => ctx.runMutation(internal.topics.finishRunForAgent, a),
-  },
-  {
-    name: "list_topic_runs",
-    description: "Past Topic opportunities research runs (newest first) with how many topics each added or refreshed and its summary.",
-    inputSchema: { type: "object", properties: {} },
-    annotations: { readOnlyHint: true },
-    run: (ctx) => ctx.runQuery(internal.topics.runsForAgent, {}),
-  },
-  {
-    name: "get_topic_history",
-    description: "Every version of one topic's research (newest first): score, trend, demand, competition, why now and outliers per run.",
-    inputSchema: { type: "object", properties: { topic: { type: "string", description: "Topic id or exact title" } }, required: ["topic"] },
-    annotations: { readOnlyHint: true },
-    run: (ctx, a) => ctx.runQuery(internal.topics.historyForAgent, a),
-  },
-  {
-    name: "update_topic",
-    description: "Change one topic (by id or exact title): its status, team notes, or any research fields (only the fields you send change).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        topic: { type: "string", description: "Topic id (from list_topics) or its title" },
-        status: { type: "string", enum: ["new", "saved", "used", "dismissed"] },
-        notes: { type: "string" },
-        research: { ...topicArg, required: [] },
-      },
-      required: ["topic"],
-    },
-    run: (ctx, a) => ctx.runMutation(internal.topics.updateForAgent, a),
-  },
-  {
     name: "add_brief_links",
     description:
-      "Attach links to a video's Brief tab: the sponsor brief doc, contract/SOW, script doc, email thread, Slack thread, tracking link. Give each a short label. A URL that's already there just gets the new label. Internal only.",
+      "Attach links to a project's Brief tab: the lease, the drawing set, the permit set, a vendor quote, a Figma file, an email or Slack thread. Give each a short label. A URL that's already there just gets the new label. Internal only.",
     inputSchema: {
       type: "object",
       properties: {
-        script: scriptArg,
+        project: projectArg,
         links: { type: "array", items: { type: "object", properties: { label: { type: "string" }, url: { type: "string" } }, required: ["label", "url"] } },
       },
-      required: ["script", "links"],
+      required: ["project", "links"],
     },
     run: (ctx, a) => ctx.runMutation(internal.agent.addBriefLinks, a),
   },
   {
-    name: "add_update",
+    name: "add_project_update",
     description:
-      "Log something that happened on a video to its Updates tab (newest first): a new email or Slack thread, a call, an approval, a date moving, a brief changing. Give a short title, the details, a link to the conversation and its source. Internal only: never shown on share links. Updates can't be removed by agents.",
-    inputSchema: { type: "object", properties: { script: scriptArg, agentName: { type: "string" }, ...updateProps }, required: ["script", "title"] },
+      "Log something that happened on a project to its Log tab (newest first): a site visit, a vendor call, an approval, an inspection, a date moving, a brief changing. Give a short title, the details, a link to the conversation and its source. Internal only: never shown on share links. Log entries can't be removed by agents.",
+    inputSchema: { type: "object", properties: { project: projectArg, agentName: { type: "string" }, ...updateProps }, required: ["project", "title"] },
     run: (ctx, a) => ctx.runMutation(internal.agent.addUpdate, a),
   },
   {
-    name: "update_script_details",
-    description: "Change a script's title, live date, format, status or sponsorship. Applies immediately, so only do it when the user asked.",
+    name: "update_project",
+    description: "Change a project's title, target date, type, stage or club. A stage has to belong to the type's own pipeline; changing type moves the project to the new pipeline's first stage unless this same call says where it lands. Applies immediately, so only do it when the user asked.",
     inputSchema: {
       type: "object",
-      properties: { script: scriptArg, title: { type: "string" }, liveDate: liveDateArg, format: formatArg, status: statusArg, sponsored: sponsoredArg },
-      required: ["script"],
+      properties: { project: projectArg, title: { type: "string" }, targetDate: targetDateArg, type: typeArg, stage: stageArg, club: { ...clubArg, description: `${clubArg.description}, or null for network-wide work` } },
+      required: ["project"],
     },
-    run: (ctx, a) => ctx.runMutation(internal.agent.updateDetails, a),
+    run: (ctx, a) => ctx.runMutation(internal.agent.updateProject, a),
   },
   {
     name: "get_todo",
     description:
-      "Read the team's shared Todo list (a checklist with sub-items, at the top of Native Note for everyone): its id, every item with its key, text, checked (done), indent (0 = top level, 1-4 = sub-item levels) and assignee (user id), its comments, and the team (everyone who has joined, to assign to). Tick, assign or reword items with update_todo_item; reorder or delete with edit_lines (script = the id); comment with comment_on_script.",
+      "Read the team's shared Todo list (a checklist with sub-items, at the top of the studio for everyone): its id, every item with its key, text, checked (done), indent (0 = top level, 1-4 = sub-item levels) and assignee (user id), its comments, and the team (everyone who has joined, to assign to). Tick, assign or reword items with update_todo_item; reorder or delete with edit_lines (project = the id); comment with comment_on_project.",
     inputSchema: { type: "object", properties: {} },
     annotations: { readOnlyHint: true },
     run: async (ctx) => ({
-      ...(await ctx.runQuery(internal.agent.script, { script: await ctx.runMutation(internal.agent.todoId, {}) })),
+      ...(await ctx.runQuery(internal.agent.project, { project: await ctx.runMutation(internal.agent.todoId, {}) })),
       team: await ctx.runQuery(internal.agent.team, {}),
     }),
   },
@@ -756,38 +716,38 @@ const TOOLS: Tool[] = [
     run: (ctx, a) => ctx.runMutation(internal.agent.updateTodoItem, a),
   },
   {
-    name: "list_journal",
-    description: "Riley's Journal: personal entries and internal docs (newest first). They're documents like scripts but kept out of the script views: read one with get_script and edit it with edit_lines / edit_script using its id.",
+    name: "list_notes",
+    description: "Studio notes: internal docs and personal entries (newest first). They're documents like projects but kept out of the project views: read one with get_project and edit it with edit_lines / replace_document using its id.",
     inputSchema: { type: "object", properties: { query: { type: "string", description: "Optional title search" } } },
     annotations: { readOnlyHint: true },
-    run: (ctx, a) => ctx.runQuery(internal.agent.listJournal, a),
+    run: (ctx, a) => ctx.runQuery(internal.agent.listNotes, a),
   },
   {
-    name: "create_journal_entry",
-    description: "Add a Journal entry (a personal note or internal doc, not a script). Only when asked.",
+    name: "create_note",
+    description: "Add a studio note (an internal doc, not a project). Only when asked.",
     inputSchema: { type: "object", properties: { title: { type: "string" }, lines: { type: "array", items: lineArg }, agentName: { type: "string" } }, required: ["title"] },
-    run: (ctx, a) => ctx.runMutation(internal.agent.createScript, { title: a.title, lines: a.lines, agentName: a.agentName, journal: true }),
+    run: (ctx, a) => ctx.runMutation(internal.agent.createProject, { title: a.title, lines: a.lines, agentName: a.agentName, journal: true }),
   },
   {
-    name: "create_script",
-    description: "Create a new script. Don't create scripts in bulk unless asked.",
+    name: "create_project",
+    description: "Create a project. type decides the pipeline, so pass it; stage defaults to the pipeline's first. club is the location it belongs to — leave it out for network-wide work. Don't create projects in bulk unless asked.",
     inputSchema: {
       type: "object",
       properties: {
         title: { type: "string" },
-        format: formatArg,
-        status: statusArg,
-        liveDate: liveDateArg,
-        sponsored: sponsoredArg,
+        type: typeArg,
+        stage: stageArg,
+        club: clubArg,
+        targetDate: targetDateArg,
         lines: { type: "array", items: lineArg },
-        instructions: { type: "array", items: { type: "string" } },
-        brief: { type: "string", description: "Internal brief, e.g. the sponsor's delivery requirements" },
-        updates: { type: "array", description: "Starting entries for the Updates tab", items: { type: "object", properties: updateProps, required: ["title"] } },
+        tasks: { type: "array", items: { type: "string" }, description: "Starting punch-list tasks" },
+        brief: { type: "string", description: "Scope, constraints, what done looks like" },
+        updates: { type: "array", description: "Starting entries for the Log tab", items: { type: "object", properties: updateProps, required: ["title"] } },
         agentName: { type: "string" },
       },
       required: ["title"],
     },
-    run: (ctx, a) => ctx.runMutation(internal.agent.createScript, a),
+    run: (ctx, a) => ctx.runMutation(internal.agent.createProject, a),
   },
 ];
 
@@ -809,7 +769,7 @@ export async function handle(ctx: ActionCtx, msg: RpcMessage) {
       return ok({
         protocolVersion: params?.protocolVersion ?? PROTOCOL,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "native-note", title: "Native Note", version: "2.0.0" },
+        serverInfo: { name: "switchyards-studio", title: "Switchyards Studio", version: "3.0.0" },
         instructions: RULES,
       });
     case "ping":
@@ -836,7 +796,7 @@ export async function handle(ctx: ActionCtx, msg: RpcMessage) {
 
 export const mcpPost = httpAction(async (ctx, req) => {
   if (!authorized(req)) {
-    return new Response(JSON.stringify({ error: "Unauthorized. Send Authorization: Bearer <key>." }), {
+    return new Response(JSON.stringify({ error: "Unauthorized. Send Authorization: Bearer <AGENT_API_KEY>." }), {
       status: 401,
       headers: { "content-type": "application/json", "www-authenticate": "Bearer" },
     });

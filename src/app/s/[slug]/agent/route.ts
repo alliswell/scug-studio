@@ -1,12 +1,13 @@
-// Machine-readable copy of a shared script for AI agents (e.g. Claude Code): the script, editor instructions,
-// captions, every comment, and a direct download link for every attached file, so an agent can fetch the
-// footage and assets and edit the video end to end. Public like the share link itself; nothing else is exposed.
+// Machine-readable copy of a shared project for AI agents (e.g. Claude Code): the document, the tasks,
+// every comment, and a direct download link for every attached file, so a GC, a fabricator or a vendor can
+// pull the whole set down in one command. Public like the share link itself; nothing else is exposed.
 //   GET /s/<slug>/agent            → JSON
 //   GET /s/<slug>/agent?format=md  → Markdown
 //   GET /s/<slug>/agent?format=sh  → a shell script that downloads every file into ./assets
 
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../../convex/_generated/api";
+import { stageOf, typeLabel } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -27,21 +28,21 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
     convex.query(api.share.get, { slug }),
     convex.query(api.comments.listShared, { slug }) as Promise<Cmt[]>,
   ]);
-  if (!shared) return Response.json({ error: "No script at this link" }, { status: 404 });
+  if (!shared) return Response.json({ error: "No project at this link" }, { status: 404 });
 
   const blocks = shared.blocks as Block[];
-  const instructions = shared.instructions as Block[];
+  const taskBlocks = shared.tasks as Block[];
   const lineNo = new Map(blocks.map((b, i) => [b.id, i + 1]));
-  const insKeys = new Set(instructions.map((b) => b.id));
+  const taskKeys = new Set(taskBlocks.map((b) => b.id));
   const sorted = [...comments].sort((a, b) => (lineNo.get(a.blockKey ?? "") ?? 1e9) - (lineNo.get(b.blockKey ?? "") ?? 1e9) || a.createdAt - b.createdAt);
 
-  // Every downloadable file, numbered in script order, with a file name that says where it came from
+  // Every downloadable file, numbered in document order, with a file name that says where it came from
   const files: { n: number; filename: string; kind: string; url: string; mime: string | null; size: number | null; line: number | null; lineText: string | null; comment: string; commentId: string }[] = [];
   const links: { url: string; label: string | null; line: number | null; lineText: string | null; commentId: string }[] = [];
   const used = new Set<string>();
   for (const c of sorted) {
     const line = c.blockKey ? (lineNo.get(c.blockKey) ?? null) : null;
-    const lineText = c.blockKey ? (blocks.find((b) => b.id === c.blockKey)?.content ?? instructions.find((b) => b.id === c.blockKey)?.content ?? c.quote) : null;
+    const lineText = c.blockKey ? (blocks.find((b) => b.id === c.blockKey)?.content ?? taskBlocks.find((b) => b.id === c.blockKey)?.content ?? c.quote) : null;
     for (const a of c.attachments) {
       if (!a.url) continue;
       if (a.kind === "link") {
@@ -51,7 +52,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
       const n = files.length + 1;
       let base = safe(a.name || `${a.kind}-${a.id.slice(0, 6)}`);
       if (!/\.[a-z0-9]{2,5}$/i.test(base)) base += `.${(a.mime?.split("/")[1] ?? EXT[a.kind] ?? "bin").replace("quicktime", "mov")}`;
-      let filename = `${String(n).padStart(2, "0")} - ${line ? `line ${line}` : c.blockKey && insKeys.has(c.blockKey) ? "instructions" : c.blockKey ? "removed line" : "whole script"} - ${base}`;
+      let filename = `${String(n).padStart(2, "0")} - ${line ? `line ${line}` : c.blockKey && taskKeys.has(c.blockKey) ? "tasks" : c.blockKey ? "removed line" : "whole project"} - ${base}`;
       while (used.has(filename)) filename = filename.replace(/^(\d+)/, "$1b");
       used.add(filename);
       files.push({ n, filename, kind: a.kind, url: a.url, mime: a.mime, size: a.size, line, lineText, comment: c.text, commentId: c.id });
@@ -83,7 +84,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
     files: files.filter((f) => f.commentId === c.id).map((f) => f.filename),
     links: links.filter((l) => l.commentId === c.id).map((l) => l.url),
   });
-  const script = blocks.map((b, i) => ({
+  const document = blocks.map((b, i) => ({
     line: i + 1,
     key: b.id,
     type: b.type,
@@ -100,26 +101,30 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
   }));
   const downloadScript = [
     "#!/bin/sh",
-    `# All files attached to "${shared.video.title}" (${origin}/s/${slug})`,
+    `# All files attached to "${shared.project.title}" (${origin}/s/${slug})`,
     "set -e",
     "mkdir -p assets",
     ...files.map((f) => `curl -fL --retry 3 -o ${q(`assets/${f.filename}`)} ${q(f.url)}`),
     `echo "Downloaded ${files.length} file(s) into ./assets"`,
   ].join("\n");
 
+  // The stage is named, not coloured: this copy is read as plain text, and the person it is written
+  // for cannot rely on colour anyway.
+  const stage = stageOf(shared.project.stage, shared.project.type);
+
   const data = {
     about:
-      "Native Note script, shared by link. Use `script` (lines in order) and `editorInstructions` to know what to make; comments on each line say what goes there, and `files` are the attached footage and assets (direct download URLs). Run `downloadScript` (or GET this URL with ?format=sh) to download everything into ./assets. This link is read-only.",
-    title: shared.video.title || "Untitled",
+      "Switchyards Studio project, shared by link. `document` (lines in order) and `tasks` say what the work is; comments on each line say what goes where, and `files` are the attached drawings, renders and photos (direct download URLs). Run `downloadScript` (or GET this URL with ?format=sh) to download everything into ./assets. This link is read-only.",
+    title: shared.project.title || "Untitled",
     shareUrl: `${origin}/s/${slug}`,
-    status: shared.video.status,
-    format: shared.video.format === "short" ? "short-form (vertical)" : "long-form",
-    liveDate: shared.video.liveDate,
-    editorInstructions: instructions.filter((b) => b.content.trim()).map((b) => ({ text: b.content, done: !!b.checked, comments: sorted.filter((c) => c.blockKey === b.id).map(commentView) })),
-    script,
-    wholeScriptComments: sorted.filter((c) => !c.blockKey).map(commentView),
-    commentsOnRemovedLines: sorted.filter((c) => c.blockKey && !lineNo.has(c.blockKey) && !insKeys.has(c.blockKey)).map((c) => ({ ...commentView(c), removedLineText: c.quote })),
-    captions: shared.video.captions.map((c) => ({ platform: c.platform, caption: c.caption, linkInBio: c.linkInBio, posted: c.posted, fields: c.fields.map((f) => ({ label: f.label, value: f.value })) })),
+    type: typeLabel(shared.project.type),
+    stage: { value: shared.project.stage, label: stage.label, glyph: stage.glyph },
+    club: shared.project.clubName,
+    targetDate: shared.project.targetDate,
+    tasks: taskBlocks.filter((b) => b.content.trim()).map((b) => ({ text: b.content, done: !!b.checked, comments: sorted.filter((c) => c.blockKey === b.id).map(commentView) })),
+    document,
+    wholeProjectComments: sorted.filter((c) => !c.blockKey).map(commentView),
+    commentsOnRemovedLines: sorted.filter((c) => c.blockKey && !lineNo.has(c.blockKey) && !taskKeys.has(c.blockKey)).map((c) => ({ ...commentView(c), removedLineText: c.quote })),
     files,
     links,
     downloadScript,
@@ -130,25 +135,24 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
     const md = [
       `# ${data.title}`,
       "",
-      `${data.format} · status: ${data.status}${data.liveDate ? ` · live ${data.liveDate}` : ""} · ${data.shareUrl}`,
+      `${data.type} · stage: ${stage.glyph} ${stage.label}${data.club ? ` · ${data.club}` : ""}${data.targetDate ? ` · target ${data.targetDate}` : ""} · ${data.shareUrl}`,
       "",
       `> ${data.about}`,
       "",
       `Download every file: \`curl -fsSL '${origin}/s/${slug}/agent?format=sh' | sh\``,
       "",
-      ...(data.editorInstructions.length ? ["## Editor instructions", ...data.editorInstructions.map((i) => `- [${i.done ? "x" : " "}] ${i.text}`), ""] : []),
-      "## Script",
-      ...script.flatMap((l) => [
+      ...(data.tasks.length ? ["## Tasks", ...data.tasks.map((t) => `- [${t.done ? "x" : " "}] ${t.text}`), ""] : []),
+      "## Document",
+      ...document.flatMap((l) => [
         `${l.line}. ${l.type === "h1" ? `**${l.text}**` : l.text}`,
         ...l.comments.map((c) => `   - 💬 ${c.author ?? "Someone"}: ${c.text.replace(/\n/g, " ")}${c.files.length ? ` [files: ${c.files.join(", ")}]` : ""}${c.links.length ? ` [links: ${c.links.join(", ")}]` : ""}`),
       ]),
       "",
-      ...(data.wholeScriptComments.length ? ["## Comments on the whole script", ...data.wholeScriptComments.map((c) => `- ${c.author ?? "Someone"}: ${c.text}${c.files.length ? ` [files: ${c.files.join(", ")}]` : ""}`), ""] : []),
+      ...(data.wholeProjectComments.length ? ["## Comments on the whole project", ...data.wholeProjectComments.map((c) => `- ${c.author ?? "Someone"}: ${c.text}${c.files.length ? ` [files: ${c.files.join(", ")}]` : ""}`), ""] : []),
       "## Files",
       ...(files.length ? files.map((f) => `- ${f.filename} (${f.kind}${f.size ? `, ${f.size < 1e6 ? `${Math.max(1, Math.round(f.size / 1e3))} KB` : `${Math.round((f.size / 1e6) * 10) / 10} MB`}` : ""}): ${f.url}`) : ["None."]),
       "",
       ...(links.length ? ["## Links", ...links.map((l) => `- ${l.url}${l.line ? ` (line ${l.line})` : ""}`), ""] : []),
-      ...(data.captions.length ? ["## Captions", ...data.captions.map((c) => `- ${c.platform}: ${c.caption}`), ""] : []),
     ].join("\n");
     return new Response(md, { headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store" } });
   }

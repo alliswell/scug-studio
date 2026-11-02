@@ -22,6 +22,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "convex/_generated/**",
     "output/playwright/**",
+    // Vendored, already minified, and not ours to fix: pdf.js's worker alone accounts for
+    // every lint error and most of the warnings in the repo.
+    "public/**",
   ]),
 ]);
 

@@ -9,32 +9,51 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { JournalList } from "@/components/JournalList";
-import { KanbanView, type KanbanVideo } from "@/components/KanbanView";
+import { KanbanView, type KanbanProject } from "@/components/KanbanView";
 import { CalendarView } from "@/components/CalendarView";
-import { FeedView } from "@/components/FeedView";
+import { FeedView, FilterSelect } from "@/components/FeedView";
 import { Mymind } from "@/components/Mymind";
 import { Library } from "@/components/Library";
-import { PartnerLogo } from "@/components/VideoMeta";
 import { BoardsList } from "@/components/BoardsList";
-import { TopicsApp } from "@/components/TopicsApp";
-import { YouTubeApp } from "@/components/YouTubeApp";
 import { ScratchboardList } from "@/components/ScratchboardList";
 import { PdfList } from "@/components/PdfList";
-import { EditFeed } from "@/components/EditFeed";
+import { Reviews } from "@/components/Reviews";
+import { ClubsList } from "@/components/ClubsList";
 import { HomeDashboard } from "@/components/HomeDashboard";
-import { FilterSelect } from "@/components/FeedView";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { Tweet } from "@/components/Tweet";
-import { BrandDeals } from "@/components/BrandDeals";
-import { ShowSidebarButton, useAppSidebar, useHomeView, type View } from "@/components/HomeSidebar";
-import { FormatIcon } from "@/components/FormatIcon";
+import {
+  ShowSidebarButton,
+  STUDIO_VIEW_EVENT,
+  VIEWS,
+  isView,
+  useAppSidebar,
+  useHomeView,
+  type View,
+} from "@/components/HomeSidebar";
+import { TypeIcon } from "@/components/TypeIcon";
 import { IconCheck, IconPencil, IconTrash, IconX, IconPin, IconPlus, IconSearch } from "@/components/icons";
 import { useIsMobile } from "@/lib/useIsMobile";
-import { FORMATS, SPONSORSHIPS, STATUSES, isPaidSponsor, statusOf, type Sponsorship, type VideoFormat, type VideoStatus } from "@/lib/types";
+import {
+  ALL_STAGES,
+  PROJECT_TYPES,
+  stageOf,
+  stagesFor,
+  typeLabel,
+  type ProjectStage,
+  type ProjectType,
+} from "@/lib/types";
 
 export default function Home() {
-  return <ScriptList />;
+  return <ProjectList />;
 }
+
+/** The tab title for each view, and the ?view= whitelist, both read off the one registry */
+const TITLES = Object.fromEntries(VIEWS.map((v) => [v.view, v.title])) as Record<View, string>;
+
+/** Views that fill the page themselves */
+const BARE: View[] = ["home", "journal"];
+/** Views that sit in the padded app container, with nothing but the sidebar button above them */
+const PANELS: View[] = ["clubs", "reviews", "mymind", "library", "boards", "scratchboards", "pdfs"];
 
 /** "Sep 12", with the year only when it isn't this year. */
 function shortDate(d: string | null) {
@@ -56,20 +75,21 @@ function edited(ts: number) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-type SortKey = "title" | "format" | "liveDate" | "status" | "edited";
-type Sortable = { title: string; format: string; liveDate: string | null; status: string; updatedAt: number };
+type SortKey = "title" | "type" | "targetDate" | "stage" | "edited";
+type Sortable = { title: string; type: string; targetDate: string | null; stage: string; updatedAt: number };
 
-/** Compares two scripts on one column; empty values (no title, no live date) always go last. */
+/** Compares two projects on one column; empty values (no title, no target date) always go last. */
 function compare(a: Sortable, b: Sortable, key: SortKey): number {
   switch (key) {
     case "title":
-      return (a.title || "\uffff").localeCompare(b.title || "\uffff", undefined, { sensitivity: "base", numeric: true });
-    case "format":
-      return a.format.localeCompare(b.format);
-    case "liveDate":
-      return (a.liveDate ?? "9999").localeCompare(b.liveDate ?? "9999");
-    case "status":
-      return STATUSES.findIndex((s) => s.value === statusOf(a.status).value) - STATUSES.findIndex((s) => s.value === statusOf(b.status).value);
+      return (a.title || "￿").localeCompare(b.title || "￿", undefined, { sensitivity: "base", numeric: true });
+    case "type":
+      return a.type.localeCompare(b.type);
+    case "targetDate":
+      return (a.targetDate ?? "9999").localeCompare(b.targetDate ?? "9999");
+    case "stage":
+      // One order across both pipelines: physical first, then digital, each in pipeline order
+      return ALL_STAGES.findIndex((s) => s.value === a.stage) - ALL_STAGES.findIndex((s) => s.value === b.stage);
     case "edited":
       return a.updatedAt - b.updatedAt;
   }
@@ -78,9 +98,9 @@ function compare(a: Sortable, b: Sortable, key: SortKey): number {
 const SORTS: { key: SortKey; label: string }[] = [
   { key: "edited", label: "Last edited" },
   { key: "title", label: "Title" },
-  { key: "liveDate", label: "Live date" },
-  { key: "status", label: "Status" },
-  { key: "format", label: "Format" },
+  { key: "targetDate", label: "Target date" },
+  { key: "stage", label: "Stage" },
+  { key: "type", label: "Type" },
 ];
 
 /** A small sort button that opens a menu (like Notion): pick a field, then the direction. */
@@ -152,39 +172,9 @@ function SortMenu({ sort, onChange }: { sort: { key: SortKey; dir: 1 | -1 }; onC
   );
 }
 
-/** The sponsorship pill at the far right of a row: colored by type, dashed "Sponsor?" when nobody has decided. */
-function SponsorPill({ id, title, value, onChange }: { id: string; title: string; value: Sponsorship; onChange: (s: Sponsorship) => void }) {
-  const opt = SPONSORSHIPS.find((x) => x.value === value) ?? SPONSORSHIPS[0];
-  const unset = value === "none";
-  return (
-    <Cell className={`relative inline-flex sm:w-[96px] sm:justify-end ${unset ? "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100" : ""}`}>
-      <span
-        className={`whitespace-nowrap rounded-md px-2 py-0.5 text-[12px] font-medium ${
-          unset ? "border border-dashed border-(--c-l-d4d4d4) text-(--c-t-9a9a9a)" : opt.pill
-        }`}
-      >
-        {unset ? "Sponsor?" : opt.label}
-      </span>
-      <select
-        id={`sponsored-${id}`}
-        aria-label={`Sponsorship of ${title || "Untitled"}`}
-        value={value}
-        onChange={(e) => onChange(e.target.value as Sponsorship)}
-        className="absolute inset-0 cursor-pointer opacity-0"
-      >
-        {SPONSORSHIPS.map((x) => (
-          <option key={x.value} value={x.value}>
-            {x.value === "none" ? "Not decided" : x.label}
-          </option>
-        ))}
-      </select>
-    </Cell>
-  );
-}
-
 const cellCls = "relative inline-flex w-fit items-center rounded-md px-1.5 py-0.5 hover:bg-(--c-b-f0f0f0)";
 
-/** A spot inside a row link that can be edited in place: clicks here don't open the script. */
+/** A spot inside a row link that can be edited in place: clicks here don't open the project. */
 function Cell({ className, children }: { className?: string; children: ReactNode }) {
   return (
     <span
@@ -199,7 +189,7 @@ function Cell({ className, children }: { className?: string; children: ReactNode
   );
 }
 
-/** The title, with a pencil (on hover) to rename it without opening the script. */
+/** The title, with a pencil (on hover) to rename it without opening the project. */
 function TitleCell({ title, onRename }: { title: string; onRename: (t: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -249,32 +239,30 @@ function TitleCell({ title, onRename }: { title: string; onRename: (t: string) =
   );
 }
 
-
-function ScriptList() {
+function ProjectList() {
   const router = useRouter();
-  const videos = useQuery(api.videos.list);
-  const partners = useQuery(api.partners.list);
-  const partnerById = new Map((partners ?? []).map((p) => [p.id as string, p]));
+  const projects = useQuery(api.projects.list);
+  const clubs = useQuery(api.clubs.list);
   const me = useQuery(api.users.me);
-  const create = useMutation(api.videos.create);
-  const remove = useMutation(api.videos.remove);
-  const update = useMutation(api.videos.update);
-  const reorder = useMutation(api.videos.reorder);
-  const setPinned = useMutation(api.videos.setPinned);
-  const [filter, setFilter] = useState<"all" | VideoFormat>("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | VideoStatus>("inProduction");
-  const [sponsorFilter, setSponsorFilter] = useState<"all" | "sponsored" | "notSponsored">("all");
-  const isSponsored = (v: { sponsored?: string }) => isPaidSponsor(v.sponsored);
+  const create = useMutation(api.projects.create);
+  const remove = useMutation(api.projects.remove);
+  const update = useMutation(api.projects.update);
+  const reorder = useMutation(api.projects.reorder);
+  const setPinned = useMutation(api.projects.setPinned);
+  const [typeFilter, setTypeFilter] = useState<"all" | ProjectType>("all");
+  const [stageFilter, setStageFilter] = useState<string>("all");
+  /** "all", "none" (network-wide work), or a club's id */
+  const [clubFilter, setClubFilter] = useState<string>("all");
+  /** Which pipeline the board shows. A board may only ever hold one: the other type has no column here. */
+  const [boardType, setBoardType] = useState<ProjectType>("physical");
   const [search, setSearch] = useState("");
   // Newest edits first until a column header is clicked
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "edited", dir: -1 });
   const [creating, setCreating] = useState(false);
   const mobile = useIsMobile();
-  const { view, setView, newScript: newScriptRef } = useHomeView();
-  useDocumentTitle(
-    { home: "Home", list: "Scripts", calendar: "Calendar", kanban: "Kanban", journal: "Journal", feed: "Feed", mymind: "Mymind", library: "Library", tweet: "Tweet", brands: "Brand deals", boards: "Excalidraw", topics: "Topic opportunities", youtube: "YouTube", editfeed: "Edit Feed", scratchboards: "Scratchboard", pdfs: "PDFs" }[view],
-  );
-  /** The status / sponsorship / format filters only show after pressing Filter */
+  const { view, setView, newProject: newProjectRef } = useHomeView();
+  useDocumentTitle(TITLES[view]);
+  /** The stage / type / club filters only show after pressing Filter */
   const [filtersOpen, setFiltersOpen] = useState(false);
   const side = useAppSidebar();
   const sidebarOpen = side.shown;
@@ -286,9 +274,9 @@ function ScriptList() {
       const saved = localStorage.getItem("home-view");
       // ?view=… (e.g. coming back from a board) wins over the remembered view
       const asked = new URLSearchParams(window.location.search).get("view") ?? saved;
-      if (asked && ["home", "calendar", "kanban", "journal", "feed", "mymind", "library", "tweet", "brands", "boards", "topics", "youtube", "editfeed", "scratchboards", "pdfs", "list"].includes(asked)) {
-        viewAsked.current = asked as View;
-        setView(asked as View);
+      if (asked && isView(asked)) {
+        viewAsked.current = asked;
+        setView(asked);
       }
       setFiltersOpen(localStorage.getItem("home-filters") === "1");
     } catch {}
@@ -298,19 +286,20 @@ function ScriptList() {
   useEffect(() => {
     try {
       const p = JSON.parse(localStorage.getItem("home-prefs") ?? "{}");
-      if (p.status && (p.status === "all" || STATUSES.some((x) => x.value === p.status))) setStatusFilter(p.status);
-      if (["all", "sponsored", "notSponsored"].includes(p.sponsor)) setSponsorFilter(p.sponsor);
-      if (["all", "long", "short"].includes(p.format)) setFilter(p.format);
-      if (p.sort && ["title", "format", "liveDate", "status", "edited"].includes(p.sort.key) && (p.sort.dir === 1 || p.sort.dir === -1)) setSort(p.sort);
+      if (p.stage === "all" || ALL_STAGES.some((x) => x.value === p.stage)) setStageFilter(p.stage ?? "all");
+      if (typeof p.club === "string") setClubFilter(p.club);
+      if (PROJECT_TYPES.some((x) => x.value === p.type) || p.type === "all") setTypeFilter(p.type);
+      if (PROJECT_TYPES.some((x) => x.value === p.boardType)) setBoardType(p.boardType);
+      if (p.sort && SORTS.some((x) => x.key === p.sort.key) && (p.sort.dir === 1 || p.sort.dir === -1)) setSort(p.sort);
     } catch {}
     setPrefsLoaded(true);
   }, []);
   useEffect(() => {
     if (!prefsLoaded) return;
     try {
-      localStorage.setItem("home-prefs", JSON.stringify({ status: statusFilter, sponsor: sponsorFilter, format: filter, sort }));
+      localStorage.setItem("home-prefs", JSON.stringify({ stage: stageFilter, club: clubFilter, type: typeFilter, boardType, sort }));
     } catch {}
-  }, [prefsLoaded, statusFilter, sponsorFilter, filter, sort]);
+  }, [prefsLoaded, stageFilter, clubFilter, typeFilter, boardType, sort]);
   // The open view lives in the address too, so the browser's Back (and back arrows) return to exactly this view
   useEffect(() => {
     // (not before the view asked for on opening has been switched to)
@@ -332,8 +321,8 @@ function ScriptList() {
         localStorage.setItem("home-view", v);
       } catch {}
     };
-    window.addEventListener("native-note:view", onView);
-    return () => window.removeEventListener("native-note:view", onView);
+    window.addEventListener(STUDIO_VIEW_EVENT, onView);
+    return () => window.removeEventListener(STUDIO_VIEW_EVENT, onView);
   }, [setView]);
   const remember = (k: string, v: string) => {
     try {
@@ -342,68 +331,270 @@ function ScriptList() {
   };
   const toggleSidebar = side.toggle;
 
-  const newScript = async () => {
+  /** A club picked in the filters is where a new project belongs; "all" and "none" mean network-wide */
+  const filterClubId = clubs?.some((c) => c._id === clubFilter) ? (clubFilter as Id<"clubs">) : null;
+
+  const newProject = async () => {
     setCreating(true);
     try {
-      const id = await create({ format: filter === "short" ? "short" : "long", ...(statusFilter !== "all" ? { status: statusFilter } : {}) });
-      router.push(`/v/${id}`);
+      const type = typeFilter === "all" ? (view === "board" ? boardType : "physical") : typeFilter;
+      const stage = ALL_STAGES.some((s) => s.value === stageFilter) && stagesFor(type).some((s) => s.value === stageFilter) ? (stageFilter as ProjectStage) : undefined;
+      const id = await create({ type, ...(stage ? { stage } : {}), ...(filterClubId ? { clubId: filterClubId } : {}) });
+      router.push(`/p/${id}`);
     } catch {
       setCreating(false);
     }
   };
-  // The sidebar's New script starts one that matches the filters here
+  // The sidebar's New project starts one that matches the filters here
   useEffect(() => {
-    newScriptRef.current = () => void newScript();
+    newProjectRef.current = () => void newProject();
     return () => {
-      newScriptRef.current = null;
+      newProjectRef.current = null;
     };
   });
 
   const q = search.trim().toLowerCase();
-  const shown = (videos ?? []).filter(
-    (v) =>
-      (statusFilter === "all" || statusOf(v.status).value === statusFilter) &&
-      (sponsorFilter === "all" || (sponsorFilter === "sponsored") === isSponsored(v)) &&
-      (filter === "all" || v.format === filter) &&
-      (!q || (v.title || "untitled").toLowerCase().includes(q)),
+  const inClub = (clubId: string | null | undefined, want: string) => (want === "all" ? true : want === "none" ? !clubId : clubId === want);
+  const shown = (projects ?? []).filter(
+    (p) =>
+      (stageFilter === "all" || p.stage === stageFilter) &&
+      (typeFilter === "all" || p.type === typeFilter) &&
+      inClub(p.clubId, clubFilter) &&
+      (!q || (p.title || "untitled").toLowerCase().includes(q)),
   );
   shown.sort((a, b) => {
     const c = compare(a, b, sort.key);
     // Empty titles and dates stay at the bottom whichever way you sort
-    const emptyA = (sort.key === "title" && !a.title) || (sort.key === "liveDate" && !a.liveDate);
-    const emptyB = (sort.key === "title" && !b.title) || (sort.key === "liveDate" && !b.liveDate);
+    const emptyA = (sort.key === "title" && !a.title) || (sort.key === "targetDate" && !a.targetDate);
+    const emptyB = (sort.key === "title" && !b.title) || (sort.key === "targetDate" && !b.targetDate);
     if (emptyA !== emptyB) return emptyA ? 1 : -1;
     return c * sort.dir || b.updatedAt - a.updatedAt;
   });
 
-  const onMove = (id: string, liveDate: string) => void update({ id: id as Id<"videos">, liveDate: liveDate || null });
-  // Kanban: every status (the columns are the statuses), with the other filters and search applied
-  const board = view === "kanban" ? (videos ?? []).filter((v) => (sponsorFilter === "all" || (sponsorFilter === "sponsored") === isSponsored(v)) && (filter === "all" || v.format === filter) && (!q || (v.title || "untitled").toLowerCase().includes(q))) : [];
-  const all = videos ?? [];
-  const counts = videos
+  const onMove = (id: string, targetDate: string) => void update({ id: id as Id<"projects">, targetDate: targetDate || null });
+  // The board is one pipeline at a time (the columns are that pipeline's stages), with the club
+  // filter and the search applied. The stage filter doesn't apply: the columns are the stages.
+  const board =
+    view === "board"
+      ? (projects ?? []).filter((p) => p.type === boardType && inClub(p.clubId, clubFilter) && (!q || (p.title || "untitled").toLowerCase().includes(q)))
+      : [];
+  const all = projects ?? [];
+  const counts = projects
     ? {
-        status: Object.fromEntries([...STATUSES.map((x) => x.value), "all"].map((k) => [k, all.filter((v) => k === "all" || statusOf(v.status).value === k).length])),
-        sponsor: {
-          all: all.length,
-          sponsored: all.filter(isSponsored).length,
-          notSponsored: all.filter((v) => !isSponsored(v)).length,
-        },
-        format: { all: all.length, long: all.filter((v) => v.format === "long").length, short: all.filter((v) => v.format === "short").length },
+        stage: Object.fromEntries([...ALL_STAGES.map((x) => x.value), "all"].map((k) => [k, all.filter((p) => k === "all" || p.stage === k).length])),
+        type: Object.fromEntries([...PROJECT_TYPES.map((x) => x.value), "all"].map((k) => [k, all.filter((p) => k === "all" || p.type === k).length])),
+        club: Object.fromEntries([...(clubs ?? []).map((c) => c._id as string), "all", "none"].map((k) => [k, all.filter((p) => inClub(p.clubId, k)).length])),
       }
     : undefined;
-  const activeFilters = (statusFilter !== "all" && view !== "kanban" ? 1 : 0) + (sponsorFilter !== "all" ? 1 : 0) + (filter !== "all" ? 1 : 0);
+  const activeFilters = (stageFilter !== "all" && view !== "board" ? 1 : 0) + (typeFilter !== "all" && view !== "board" ? 1 : 0) + (clubFilter !== "all" ? 1 : 0);
+  const clubLabel = clubFilter === "all" ? null : clubFilter === "none" ? "network-wide" : (clubs?.find((c) => c._id === clubFilter)?.name ?? null);
   const heading = [
-    statusFilter === "all" ? "All scripts" : statusOf(statusFilter).label,
-    sponsorFilter === "sponsored" ? "sponsored" : sponsorFilter === "notSponsored" ? "not sponsored" : null,
-    filter === "all" ? null : FORMATS.find((x) => x.value === filter)?.label.toLowerCase(),
+    stageFilter === "all" ? "All projects" : stageOf(stageFilter).label,
+    typeFilter === "all" ? null : typeLabel(typeFilter).toLowerCase(),
+    clubLabel,
   ]
     .filter(Boolean)
     .join(" · ");
 
-  return (
-    <div className="nn-whiteboard relative flex min-h-screen">
+  /** Every view, so a view with no pane here is a compile error rather than a silent blank page */
+  const panes: Record<View, ReactNode> = {
+    home: <HomeDashboard />,
+    journal: <JournalList />,
+    clubs: <ClubsList />,
+    reviews: <Reviews />,
+    mymind: <Mymind />,
+    library: <Library />,
+    boards: <BoardsList />,
+    scratchboards: <ScratchboardList />,
+    pdfs: <PdfList />,
+    feed: <FeedView />,
+    calendar: projects ? <CalendarView projects={shown} onMove={onMove} /> : null,
+    board: projects ? (
+      <KanbanView
+        stages={stagesFor(boardType)}
+        projects={board as KanbanProject[]}
+        onReorder={(stage, ids, moved) => void reorder({ stage: stage as ProjectStage, ids: ids as Id<"projects">[], moved: moved as Id<"projects"> })}
+        onNew={(stage, d) =>
+          create({
+            type: boardType,
+            stage: stage as ProjectStage,
+            title: d.title,
+            targetDate: d.targetDate,
+            ...(filterClubId ? { clubId: filterClubId } : {}),
+          })
+        }
+      />
+    ) : null,
+    list:
+      projects === undefined ? null : shown.length === 0 ? (
+        <div className="py-16 text-center text-[14px] text-(--c-t-737373)">
+          {projects.length === 0 ? (
+            <>
+              No projects yet.{" "}
+              <button type="button" onClick={newProject} className="font-medium text-(--c-t-2358d8)">
+                Start one
+              </button>
+            </>
+          ) : q ? (
+            "Nothing matches."
+          ) : activeFilters === 0 ? (
+            "Nothing here yet."
+          ) : (
+            "No projects for these filters."
+          )}
+        </div>
+      ) : (
+        shown.map((p) => {
+          const st = stageOf(p.stage, p.type);
+          return (
+            <div key={p._id} className="group relative">
+              <Link
+                href={`/p/${p._id}`}
+                className="block rounded-md border-b border-(--c-l-f0f0f0) px-3 py-3.5 text-[14px] text-(--c-t-262626) no-underline hover:bg-(--c-b-fafafa) sm:flex sm:items-center sm:gap-4 sm:py-2.5"
+              >
+                <div className="min-w-0 sm:flex-1">
+                  <TitleCell title={p.title} onRename={(title) => void update({ id: p._id, title })} />
+                </div>
+                {/* Phones: a second line. Computers: right-aligned on the same line. Each part is editable in place. */}
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] sm:mt-0 sm:shrink-0 sm:flex-nowrap sm:justify-end">
+                  {p.openMarks > 0 && (
+                    <span className="whitespace-nowrap rounded-full bg-(--c-b-fdecea) px-2 py-0.5 text-[11px] font-medium text-(--c-t-b42318)">
+                      {p.openMarks === 1 ? "1 open mark" : `${p.openMarks} open marks`}
+                    </span>
+                  )}
+                  {p.editedCount > 0 && (
+                    <span className="whitespace-nowrap rounded-full bg-(--c-b-f0f0f0) px-2 py-0.5 text-[11px] font-medium text-(--c-t-6b6b6b)">
+                      {p.editedCount === 1 ? "Suggested copy" : `${p.editedCount} suggested`}
+                    </span>
+                  )}
+                  <Cell className={`${cellCls} gap-1.5 whitespace-nowrap text-(--c-t-6b6b6b)`}>
+                    {/* The glyph says the stage on its own; the colour is only a second reading of it */}
+                    <span style={{ color: st.hex }} aria-hidden="true">
+                      {st.glyph}
+                    </span>
+                    {st.label}
+                    <select
+                      id={`stage-${p._id}`}
+                      aria-label={`Stage of ${p.title || "Untitled"}`}
+                      value={st.value}
+                      onChange={(e) => void update({ id: p._id, stage: e.target.value as ProjectStage })}
+                      className="absolute inset-0 cursor-pointer opacity-0"
+                    >
+                      {stagesFor(p.type).map((x) => (
+                        <option key={x.value} value={x.value}>
+                          {x.glyph} {x.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Cell>
+                  <Cell className={`${cellCls} py-1 text-(--c-t-8a8a8a)`}>
+                    <TypeIcon type={p.type} size={15} />
+                    <select
+                      id={`type-${p._id}`}
+                      aria-label={`Type of ${p.title || "Untitled"}`}
+                      value={p.type}
+                      onChange={(e) => void update({ id: p._id, type: e.target.value as ProjectType })}
+                      className="absolute inset-0 cursor-pointer opacity-0"
+                    >
+                      {PROJECT_TYPES.map((t) => (
+                        <option key={t.value} value={t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Cell>
+                  <span className="inline-flex items-center sm:w-[92px] sm:justify-end">
+                    {p.targetDate && (
+                      <Cell className="inline-flex">
+                        <button
+                          type="button"
+                          aria-label={`Clear the target date of ${p.title || "Untitled"}`}
+                          title="Clear date"
+                          onClick={() => void update({ id: p._id, targetDate: null })}
+                          className="flex h-6 w-5 items-center justify-center rounded text-(--c-t-9a9a9a) opacity-0 hover:bg-(--c-b-f0f0f0) hover:text-(--c-t-1b1b1b) focus-visible:opacity-100 group-hover:opacity-100"
+                        >
+                          <IconX size={11} />
+                        </button>
+                      </Cell>
+                    )}
+                    <Cell
+                      className={`${cellCls} whitespace-nowrap ${p.targetDate ? "text-(--c-t-1b1b1b)" : "text-(--c-t-b0b0b0) sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"}`}
+                    >
+                      {p.targetDate ? shortDate(p.targetDate) : "Add date"}
+                      <input
+                        id={`date-${p._id}`}
+                        type="date"
+                        aria-label={`Target date of ${p.title || "Untitled"}`}
+                        value={p.targetDate ?? ""}
+                        onChange={(e) => void update({ id: p._id, targetDate: e.target.value || null })}
+                        onClick={(e) => (e.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.()}
+                        className="absolute inset-0 cursor-pointer opacity-0"
+                      />
+                    </Cell>
+                  </span>
+                  {/* Which club this is for; "Network" is work that belongs to no single club */}
+                  <Cell
+                    className={`${cellCls} max-w-[150px] whitespace-nowrap ${p.clubName ? "text-(--c-t-6b6b6b)" : "text-(--c-t-b0b0b0) sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"}`}
+                  >
+                    <span className="truncate">{p.clubName ?? "Network"}</span>
+                    <select
+                      id={`club-${p._id}`}
+                      aria-label={`Club of ${p.title || "Untitled"}`}
+                      value={p.clubId ?? ""}
+                      onChange={(e) => void update({ id: p._id, clubId: (e.target.value || null) as Id<"clubs"> | null })}
+                      className="absolute inset-0 cursor-pointer opacity-0"
+                    >
+                      <option value="">Network-wide</option>
+                      {(clubs ?? []).map((c) => (
+                        <option key={c._id} value={c._id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Cell>
+                  <span className="ml-auto text-[12px] text-(--c-t-9a9a9a) sm:hidden">
+                    Edited {edited(p.updatedAt).replace(/^(Just now|Today|Yesterday)$/, (w) => w.toLowerCase())}
+                  </span>
+                </div>
+              </Link>
+              <button
+                type="button"
+                aria-pressed={!!p.pinnedAt}
+                aria-label={p.pinnedAt ? `Unpin ${p.title || "Untitled"}` : `Pin ${p.title || "Untitled"}`}
+                title={p.pinnedAt ? "Unpin" : "Pin to the top"}
+                onClick={() => void setPinned({ id: p._id, pinned: !p.pinnedAt })}
+                // Just left of the row, like the delete button on the right
+                className={`absolute -left-10 top-0 bottom-0 hidden w-10 items-center justify-center transition-opacity sm:flex ${
+                  p.pinnedAt ? "text-(--c-t-2358d8) opacity-100" : "text-(--c-t-9a9a9a) opacity-0 hover:text-(--c-t-1b1b1b) focus-visible:opacity-100 group-hover:opacity-100"
+                }`}
+              >
+                <IconPin size={15} filled={!!p.pinnedAt} />
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete ${p.title || "Untitled"}`}
+                onClick={async () => {
+                  if (!confirm(`Delete "${p.title || "Untitled"}" and all its files? This can't be undone.`)) return;
+                  await remove({ id: p._id });
+                }}
+                // Sits right against the row (no gap) and stays hoverable while faded, so the pointer can reach it
+                className="absolute -right-11 top-0 bottom-0 hidden w-11 sm:flex items-center justify-center text-(--c-t-9a9a9a) opacity-0 transition-opacity hover:text-(--c-t-b42318) focus-visible:opacity-100 group-hover:opacity-100"
+              >
+                <IconTrash />
+              </button>
+            </div>
+          );
+        })
+      ),
+  };
 
-      {view === "home" ? (
+  const pane = panes[view];
+  const bare = BARE.includes(view);
+  const panel = PANELS.includes(view);
+
+  return (
+    <div className="studio-whiteboard relative flex min-h-screen">
+      {bare ? (
         <div className="relative min-h-screen min-w-0 flex-1">
           {(!sidebarOpen || mobile) && <AccountButton initial={(me?.name || me?.email || "?").slice(0, 1).toUpperCase()} email={me?.email ?? ""} />}
           <div className="px-5 pt-6">
@@ -411,367 +602,205 @@ function ScriptList() {
               {(!sidebarOpen || mobile) && <ShowSidebarButton onClick={() => toggleSidebar(true)} className="-ml-1.5" />}
             </div>
           </div>
-          <HomeDashboard />
+          {pane}
         </div>
-      ) : view === "journal" ? (
-        <div className="relative min-h-screen min-w-0 flex-1">
-          {(!sidebarOpen || mobile) && <AccountButton initial={(me?.name || me?.email || "?").slice(0, 1).toUpperCase()} email={me?.email ?? ""} />}
-          <div className="px-5 pt-6">
-            <div className="flex min-h-9 items-center">{(!sidebarOpen || mobile) && <ShowSidebarButton onClick={() => toggleSidebar(true)} className="-ml-1.5" />}</div>
-          </div>
-          <JournalList />
-        </div>
-      ) : view === "mymind" || view === "library" || view === "tweet" || view === "brands" || view === "boards" || view === "topics" || view === "youtube" || view === "editfeed" || view === "scratchboards" || view === "pdfs" ? (
+      ) : panel ? (
         <div className="relative min-h-screen min-w-0 flex-1">
           <div className="px-5 pb-24 pt-6 sm:px-8">
             <div className="flex min-h-9 items-center">
               {(!sidebarOpen || mobile) && <ShowSidebarButton onClick={() => toggleSidebar(true)} className="-ml-1.5" />}
             </div>
-            <div className="mt-4">
-              {view === "library" ? <Library /> : view === "tweet" ? <Tweet /> : view === "brands" ? <BrandDeals /> : view === "boards" ? <BoardsList /> : view === "topics" ? <TopicsApp /> : view === "youtube" ? <YouTubeApp /> : view === "editfeed" ? <EditFeed /> : view === "scratchboards" ? <ScratchboardList /> : view === "pdfs" ? <PdfList /> : <Mymind />}
-            </div>
+            <div className="mt-4">{pane}</div>
           </div>
         </div>
       ) : (
-      <div className="relative min-w-0 flex-1">
-        {/* The account lives at the bottom of the sidebar; while it's hidden, here */}
-        {(!sidebarOpen || mobile) && <AccountButton initial={(me?.name || me?.email || "?").slice(0, 1).toUpperCase()} email={me?.email ?? ""} />}
-        <div className={`mx-auto px-5 pb-24 pt-6 ${view === "kanban" ? "max-w-[1520px]" : view === "calendar" ? "max-w-[1180px]" : "max-w-[1120px]"}`}>
-          <div className="flex min-h-9 items-center gap-2 pr-12">
-            {(!sidebarOpen || mobile) && <ShowSidebarButton onClick={() => toggleSidebar(true)} className="-ml-1.5" />}
-            {/* Kanban: just the title up top, with the filters right beside it */}
-            {view === "kanban" && (
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-2">
-                <h1 className="m-0 text-[28px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">Kanban</h1>
-                <label className="hidden h-8 w-[200px] items-center gap-2 rounded-lg bg-(--c-b-ffffff)/70 px-2 text-(--c-t-9a9a9a) ring-1 ring-(--c-l-e3e3e0) transition-[width] focus-within:w-[240px] focus-within:ring-(--c-l-c9c9c9) sm:flex">
-                  <IconSearch size={14} />
-                  <input
-                    id="sidebar-search"
-                    type="search"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Filter by title"
-                    aria-label="Filter scripts by title"
-                    className="w-full min-w-0 border-none bg-transparent text-[13px] text-(--c-t-1b1b1b) outline-none"
-                  />
-                </label>
-                <button
-                  type="button"
-                  aria-pressed={filtersOpen}
-                  onClick={() => {
-                    setFiltersOpen(!filtersOpen);
-                    remember("home-filters", filtersOpen ? "0" : "1");
-                  }}
-                  className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] hover:bg-(--c-b-f4f4f4) ${activeFilters ? "text-(--c-t-2358d8)" : "text-(--c-t-737373)"}`}
-                >
-                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-                    <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
-                  </svg>
-                  Filter{activeFilters ? ` · ${activeFilters}` : ""}
-                </button>
-                <button
-                  type="button"
-                  onClick={newScript}
-                  disabled={creating}
-                  className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg bg-(--c-b-1b1b1b) px-3 text-[13px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333) disabled:opacity-50"
-                >
-                  <IconPlus size={14} color="var(--c-on-ink)" />
-                  New script
-                </button>
+        <div className="relative min-w-0 flex-1">
+          {/* The account lives at the bottom of the sidebar; while it's hidden, here */}
+          {(!sidebarOpen || mobile) && <AccountButton initial={(me?.name || me?.email || "?").slice(0, 1).toUpperCase()} email={me?.email ?? ""} />}
+          <div className={`mx-auto px-5 pb-24 pt-6 ${view === "board" ? "max-w-[1520px]" : view === "calendar" ? "max-w-[1180px]" : "max-w-[1120px]"}`}>
+            <div className="flex min-h-9 items-center gap-2 pr-12">
+              {(!sidebarOpen || mobile) && <ShowSidebarButton onClick={() => toggleSidebar(true)} className="-ml-1.5" />}
+              {/* Board: just the title up top, with the pipeline switch and the filters right beside it */}
+              {view === "board" && (
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-2">
+                  <h1 className="m-0 text-[28px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">Board</h1>
+                  <div className="flex h-8 overflow-hidden rounded-lg ring-1 ring-(--c-l-e3e3e0)" role="group" aria-label="Which board">
+                    {PROJECT_TYPES.map((t) => (
+                      <button
+                        key={t.value}
+                        type="button"
+                        onClick={() => setBoardType(t.value)}
+                        aria-pressed={boardType === t.value}
+                        title={t.hint}
+                        className={`inline-flex items-center gap-1.5 px-2.5 text-[13px] ${
+                          boardType === t.value ? "bg-(--c-b-1b1b1b) font-medium text-(--c-on-ink)" : "text-(--c-t-6b6b6b) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)"
+                        }`}
+                      >
+                        <TypeIcon type={t.value} size={13} />
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="hidden h-8 w-[200px] items-center gap-2 rounded-lg bg-(--c-b-ffffff)/70 px-2 text-(--c-t-9a9a9a) ring-1 ring-(--c-l-e3e3e0) transition-[width] focus-within:w-[240px] focus-within:ring-(--c-l-c9c9c9) sm:flex">
+                    <IconSearch size={14} />
+                    <input
+                      id="sidebar-search"
+                      type="search"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Filter by title"
+                      aria-label="Filter projects by title"
+                      className="w-full min-w-0 border-none bg-transparent text-[13px] text-(--c-t-1b1b1b) outline-none"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    aria-pressed={filtersOpen}
+                    onClick={() => {
+                      setFiltersOpen(!filtersOpen);
+                      remember("home-filters", filtersOpen ? "0" : "1");
+                    }}
+                    className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] hover:bg-(--c-b-f4f4f4) ${activeFilters ? "text-(--c-t-2358d8)" : "text-(--c-t-737373)"}`}
+                  >
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+                      <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
+                    </svg>
+                    Filter{activeFilters ? ` · ${activeFilters}` : ""}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={newProject}
+                    disabled={creating}
+                    className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg bg-(--c-b-1b1b1b) px-3 text-[13px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333) disabled:opacity-50"
+                  >
+                    <IconPlus size={14} color="var(--c-on-ink)" />
+                    New project
+                  </button>
+                </div>
+              )}
+            </div>
+            {view !== "board" && (
+              <div className="mt-6 flex flex-wrap items-end justify-between gap-3 border-b border-(--c-l-ebebeb) pb-3">
+                <div>
+                  <h1 className="m-0 text-[32px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">
+                    {view === "calendar" ? "Calendar" : view === "feed" ? "Feed" : "Projects"}
+                  </h1>
+                  {view !== "feed" && (
+                    <p className="m-0 mt-1 text-[14px] text-(--c-t-737373)">
+                      {heading}
+                      {q && ` · matching "${search.trim()}"`}
+                      {projects && ` · ${shown.length}`}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {view !== "feed" && (
+                    <label className="mr-1 hidden h-8 w-[180px] items-center gap-2 rounded-lg px-2 text-(--c-t-9a9a9a) ring-1 ring-(--c-l-e3e3e0) transition-[width] focus-within:w-[220px] focus-within:ring-(--c-l-c9c9c9) sm:flex">
+                      <IconSearch size={14} />
+                      <input
+                        id="sidebar-search"
+                        type="search"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Filter by title"
+                        aria-label="Filter projects by title"
+                        className="w-full min-w-0 border-none bg-transparent text-[13px] text-(--c-t-1b1b1b) outline-none"
+                      />
+                    </label>
+                  )}
+                  {view !== "feed" && (
+                    <button
+                      type="button"
+                      aria-pressed={filtersOpen}
+                      onClick={() => {
+                        setFiltersOpen(!filtersOpen);
+                        remember("home-filters", filtersOpen ? "0" : "1");
+                      }}
+                      className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] hover:bg-(--c-b-f4f4f4) ${
+                        activeFilters ? "text-(--c-t-2358d8)" : "text-(--c-t-737373)"
+                      }`}
+                    >
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+                        <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
+                      </svg>
+                      Filter{activeFilters ? ` · ${activeFilters}` : ""}
+                    </button>
+                  )}
+                  {view === "list" && <SortMenu sort={sort} onChange={setSort} />}
+                  <button
+                    type="button"
+                    onClick={newProject}
+                    disabled={creating}
+                    className="ml-1.5 inline-flex h-8 items-center gap-1.5 rounded-lg bg-(--c-b-1b1b1b) px-3 text-[13px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333) disabled:opacity-50"
+                  >
+                    <IconPlus size={14} color="var(--c-on-ink)" />
+                    New project
+                  </button>
+                </div>
               </div>
             )}
-          </div>
-          {view !== "kanban" && <div className="mt-6 flex flex-wrap items-end justify-between gap-3 border-b border-(--c-l-ebebeb) pb-3">
-            <div>
-              <h1 className="m-0 text-[32px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">{view === "calendar" ? "Calendar" : view === "feed" ? "Feed" : "Scripts"}</h1>
-              {view !== "feed" && <p className="m-0 mt-1 text-[14px] text-(--c-t-737373)">
-                {heading}
-                {q && ` · matching "${search.trim()}"`}
-                {videos && ` · ${shown.length}`}
-              </p>}
-            </div>
-            <div className="flex items-center gap-1.5">
-              {view !== "feed" && (
-                <label className="mr-1 hidden h-8 w-[180px] items-center gap-2 rounded-lg px-2 text-(--c-t-9a9a9a) ring-1 ring-(--c-l-e3e3e0) transition-[width] focus-within:w-[220px] focus-within:ring-(--c-l-c9c9c9) sm:flex">
-                  <IconSearch size={14} />
-                  <input
-                    id="sidebar-search"
-                    type="search"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Filter by title"
-                    aria-label="Filter scripts by title"
-                    className="w-full min-w-0 border-none bg-transparent text-[13px] text-(--c-t-1b1b1b) outline-none"
+
+            {filtersOpen && view !== "feed" && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {/* The board's columns are the stages, and its segmented control is the type */}
+                {view !== "board" && (
+                  <FilterSelect
+                    label="Stage"
+                    value={stageFilter}
+                    onChange={setStageFilter}
+                    options={[
+                      { value: "all", label: `All stages${counts ? ` (${counts.stage.all})` : ""}` },
+                      ...ALL_STAGES.map((x) => ({ value: x.value, label: `${x.glyph} ${x.label}${counts ? ` (${counts.stage[x.value] ?? 0})` : ""}` })),
+                    ]}
                   />
-                </label>
-              )}
-              {view !== "feed" && (
-                <button
-                  type="button"
-                  aria-pressed={filtersOpen}
-                  onClick={() => {
-                    setFiltersOpen(!filtersOpen);
-                    remember("home-filters", filtersOpen ? "0" : "1");
-                  }}
-                  className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] hover:bg-(--c-b-f4f4f4) ${
-                    activeFilters ? "text-(--c-t-2358d8)" : "text-(--c-t-737373)"
-                  }`}
-                >
-                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-                    <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
-                  </svg>
-                  Filter{activeFilters ? ` · ${activeFilters}` : ""}
-                </button>
-              )}
-              {view === "list" && <SortMenu sort={sort} onChange={setSort} />}
-              <button
-                type="button"
-                onClick={newScript}
-                disabled={creating}
-                className="ml-1.5 inline-flex h-8 items-center gap-1.5 rounded-lg bg-(--c-b-1b1b1b) px-3 text-[13px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333) disabled:opacity-50"
-              >
-                <IconPlus size={14} color="var(--c-on-ink)" />
-                New script
-              </button>
-            </div>
-          </div>}
-
-          {filtersOpen && view !== "feed" && (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              {view !== "kanban" && <FilterSelect
-                label="Status"
-                value={statusFilter}
-                onChange={(v) => setStatusFilter(v as typeof statusFilter)}
-                options={[
-                  { value: "all", label: `All statuses${counts ? ` (${counts.status.all})` : ""}` },
-                  ...STATUSES.map((x) => ({ value: x.value, label: `${x.label}${counts ? ` (${counts.status[x.value] ?? 0})` : ""}` })),
-                ]}
-              />}
-              <FilterSelect
-                label="Sponsorship"
-                value={sponsorFilter}
-                onChange={(v) => setSponsorFilter(v as typeof sponsorFilter)}
-                options={[
-                  { value: "all", label: `All sponsorships${counts ? ` (${counts.sponsor.all})` : ""}` },
-                  { value: "sponsored", label: `Sponsored${counts ? ` (${counts.sponsor.sponsored})` : ""}` },
-                  { value: "notSponsored", label: `Not sponsored${counts ? ` (${counts.sponsor.notSponsored})` : ""}` },
-                ]}
-              />
-              <FilterSelect
-                label="Format"
-                value={filter}
-                onChange={(v) => setFilter(v as typeof filter)}
-                options={[
-                  { value: "all", label: `All formats${counts ? ` (${counts.format.all})` : ""}` },
-                  ...FORMATS.map((x) => ({ value: x.value, label: `${x.label}${counts ? ` (${counts.format[x.value] ?? 0})` : ""}` })),
-                ]}
-              />
-              {activeFilters > 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStatusFilter("all");
-                    setSponsorFilter("all");
-                    setFilter("all");
-                  }}
-                  className="h-8 rounded-full px-3 text-[13px] text-(--c-t-737373) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-          )}
-
-          {view === "kanban" ? (
-            <div className="mt-5">
-              {videos && (
-                <KanbanView
-                  videos={board as KanbanVideo[]}
-                  partnerOf={(id) => (id ? partnerById.get(id) : undefined)}
-                  onReorder={(status, ids, moved) => void reorder({ status, ids: ids as Id<"videos">[], moved: moved as Id<"videos"> })}
-                  onNew={(status, d) => create({ format: d.format, status, title: d.title, liveDate: d.liveDate, sponsored: d.sponsored })}
+                )}
+                {view !== "board" && (
+                  <FilterSelect
+                    label="Type"
+                    value={typeFilter}
+                    onChange={(v) => setTypeFilter(v as typeof typeFilter)}
+                    options={[
+                      { value: "all", label: `All types${counts ? ` (${counts.type.all})` : ""}` },
+                      ...PROJECT_TYPES.map((x) => ({ value: x.value, label: `${x.label}${counts ? ` (${counts.type[x.value] ?? 0})` : ""}` })),
+                    ]}
+                  />
+                )}
+                <FilterSelect
+                  label="Club"
+                  value={clubFilter}
+                  onChange={setClubFilter}
+                  options={[
+                    { value: "all", label: `All clubs${counts ? ` (${counts.club.all})` : ""}` },
+                    { value: "none", label: `Network-wide${counts ? ` (${counts.club.none ?? 0})` : ""}` },
+                    ...(clubs ?? []).map((c) => ({ value: c._id as string, label: `${c.name}${counts ? ` (${counts.club[c._id] ?? 0})` : ""}` })),
+                  ]}
                 />
-              )}
-            </div>
-          ) : view === "calendar" ? (
-            <div className="mt-5">{videos && <CalendarView videos={shown} onMove={onMove} />}</div>
-          ) : view === "feed" ? (
-            <div className="mt-5">
-              <FeedView />
-            </div>
-          ) : (
-            <>
-        <div className="h-2" />
-        {videos === undefined ? null : shown.length === 0 ? (
-          <div className="py-16 text-center text-[14px] text-(--c-t-737373)">
-            {videos.length === 0 ? (
+                {activeFilters > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStageFilter("all");
+                      setTypeFilter("all");
+                      setClubFilter("all");
+                    }}
+                    className="h-8 rounded-full px-3 text-[13px] text-(--c-t-737373) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+
+            {view === "list" ? (
               <>
-                No scripts yet.{" "}
-                <button type="button" onClick={newScript} className="font-medium text-(--c-t-2358d8)">
-                  Start one
-                </button>
+                <div className="h-2" />
+                {pane}
               </>
             ) : (
-              q ? "Nothing matches." : statusFilter === "all" ? "Nothing here yet." : `No ${statusOf(statusFilter).label.toLowerCase()} scripts${filter === "all" ? "" : " in this format"}.`
+              <div className="mt-5">{pane}</div>
             )}
           </div>
-        ) : (
-          shown.map((v) => {
-            const st = statusOf(v.status);
-            return (
-              <div key={v._id} className="group relative">
-                <Link
-                  href={`/v/${v._id}`}
-                  className="block rounded-md border-b border-(--c-l-f0f0f0) px-3 py-3.5 text-[14px] text-(--c-t-262626) no-underline hover:bg-(--c-b-fafafa) sm:flex sm:items-center sm:gap-4 sm:py-2.5"
-                >
-                  <div className="min-w-0 sm:flex-1">
-                    <TitleCell title={v.title} onRename={(title) => void update({ id: v._id as Id<"videos">, title })} />
-                  </div>
-                  {/* Phones: a second line. Computers: right-aligned on the same line. Each part is editable in place. */}
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] sm:mt-0 sm:shrink-0 sm:flex-nowrap sm:justify-end">
-                    {v.editedCount > 0 && (
-                      <span className="whitespace-nowrap rounded-full bg-(--c-b-fdecea) px-2 py-0.5 text-[11px] font-medium text-(--c-t-b42318)">
-                        {v.editedCount === 1 ? "Edited version" : `${v.editedCount} edited`}
-                      </span>
-                    )}
-                    <Cell className={`${cellCls} gap-2 whitespace-nowrap text-(--c-t-6b6b6b)`}>
-                      <span className="h-[7px] w-[7px] rounded-full" style={{ background: st.dot }} aria-hidden="true" />
-                      {st.label}
-                      <select
-                        id={`status-${v._id}`}
-                        aria-label={`Status of ${v.title || "Untitled"}`}
-                        value={st.value}
-                        onChange={(e) => void update({ id: v._id as Id<"videos">, status: e.target.value as VideoStatus })}
-                        className="absolute inset-0 cursor-pointer opacity-0"
-                      >
-                        {STATUSES.map((x) => (
-                          <option key={x.value} value={x.value}>
-                            {x.label}
-                          </option>
-                        ))}
-                      </select>
-                    </Cell>
-                    <Cell className={`${cellCls} py-1`}>
-                      <FormatIcon format={v.format} size={15} />
-                      <select
-                        id={`format-${v._id}`}
-                        aria-label={`Format of ${v.title || "Untitled"}`}
-                        value={v.format}
-                        onChange={(e) => void update({ id: v._id as Id<"videos">, format: e.target.value as VideoFormat })}
-                        className="absolute inset-0 cursor-pointer opacity-0"
-                      >
-                        {FORMATS.map((f) => (
-                          <option key={f.value} value={f.value}>
-                            {f.label}
-                          </option>
-                        ))}
-                      </select>
-                    </Cell>
-                    <span className="inline-flex items-center sm:w-[92px] sm:justify-end">
-                      {v.liveDate && (
-                        <Cell className="inline-flex">
-                          <button
-                            type="button"
-                            aria-label={`Clear the live date of ${v.title || "Untitled"}`}
-                            title="Clear date"
-                            onClick={() => void update({ id: v._id as Id<"videos">, liveDate: null })}
-                            className="flex h-6 w-5 items-center justify-center rounded text-(--c-t-9a9a9a) opacity-0 hover:bg-(--c-b-f0f0f0) hover:text-(--c-t-1b1b1b) focus-visible:opacity-100 group-hover:opacity-100"
-                          >
-                            <IconX size={11} />
-                          </button>
-                        </Cell>
-                      )}
-                      <Cell
-                        className={`${cellCls} whitespace-nowrap ${v.liveDate ? "text-(--c-t-1b1b1b)" : "text-(--c-t-b0b0b0) sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"}`}
-                      >
-                        {v.liveDate ? shortDate(v.liveDate) : "Add date"}
-                        <input
-                          id={`date-${v._id}`}
-                          type="date"
-                          aria-label={`Live date of ${v.title || "Untitled"}`}
-                          value={v.liveDate ?? ""}
-                          onChange={(e) => void update({ id: v._id as Id<"videos">, liveDate: e.target.value || null })}
-                          onClick={(e) => (e.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.()}
-                          className="absolute inset-0 cursor-pointer opacity-0"
-                        />
-                      </Cell>
-                    </span>
-                    {/* The brand partner's logo (same as Partner Sponsor in Details); pick one here too */}
-                    {(() => {
-                      const partner = v.partnerId ? partnerById.get(v.partnerId) : undefined;
-                      return (
-                        <Cell
-                          className={`relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-(--c-b-f4f4f4) ${
-                            partner ? "" : "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"
-                          }`}
-                        >
-                          <span title={partner ? `Partner: ${partner.name}` : "Add partner sponsor"} className="inline-flex">
-                            {partner ? (
-                              <PartnerLogo p={partner} size={20} className="ring-1 ring-(--c-hairline)" />
-                            ) : (
-                              <span className="h-5 w-5 rounded-[22%] border border-dashed border-(--c-l-d4d4d4)" />
-                            )}
-                          </span>
-                          <select
-                            aria-label={`Partner sponsor of ${v.title || "Untitled"}`}
-                            value={v.partnerId ?? ""}
-                            onChange={(e) => void update({ id: v._id as Id<"videos">, partnerId: (e.target.value || null) as Id<"partners"> | null })}
-                            className="absolute inset-0 cursor-pointer opacity-0"
-                          >
-                            <option value="">No partner</option>
-                            {(partners ?? []).map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name}
-                              </option>
-                            ))}
-                          </select>
-                        </Cell>
-                      );
-                    })()}
-                    <SponsorPill
-                      id={v._id}
-                      title={v.title}
-                      value={(v.sponsored ?? "none") as Sponsorship}
-                      onChange={(sponsored) => void update({ id: v._id as Id<"videos">, sponsored })}
-                    />
-                    <span className="ml-auto text-[12px] text-(--c-t-9a9a9a) sm:hidden">
-                      Edited {edited(v.updatedAt).replace(/^(Just now|Today|Yesterday)$/, (w) => w.toLowerCase())}
-                    </span>
-                  </div>
-                </Link>
-                <button
-                  type="button"
-                  aria-pressed={!!v.pinnedAt}
-                  aria-label={v.pinnedAt ? `Unpin ${v.title || "Untitled"}` : `Pin ${v.title || "Untitled"}`}
-                  title={v.pinnedAt ? "Unpin" : "Pin to the top"}
-                  onClick={() => void setPinned({ id: v._id as Id<"videos">, pinned: !v.pinnedAt })}
-                  // Just left of the row, like the delete button on the right
-                  className={`absolute -left-10 top-0 bottom-0 hidden w-10 items-center justify-center transition-opacity sm:flex ${
-                    v.pinnedAt ? "text-(--c-t-2358d8) opacity-100" : "text-(--c-t-9a9a9a) opacity-0 hover:text-(--c-t-1b1b1b) focus-visible:opacity-100 group-hover:opacity-100"
-                  }`}
-                >
-                  <IconPin size={15} filled={!!v.pinnedAt} />
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Delete ${v.title || "Untitled"}`}
-                  onClick={async () => {
-                    if (!confirm(`Delete "${v.title || "Untitled"}" and all its files? This can't be undone.`)) return;
-                    await remove({ id: v._id as Id<"videos"> });
-                  }}
-                  // Sits right against the row (no gap) and stays hoverable while faded, so the pointer can reach it
-                  className="absolute -right-11 top-0 bottom-0 hidden w-11 sm:flex items-center justify-center text-(--c-t-9a9a9a) opacity-0 transition-opacity hover:text-(--c-t-b42318) focus-visible:opacity-100 group-hover:opacity-100"
-                >
-                  <IconTrash />
-                </button>
-              </div>
-            );
-          })
-        )}
-            </>
-          )}
         </div>
-      </div>
       )}
     </div>
   );

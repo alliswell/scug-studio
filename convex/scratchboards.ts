@@ -1,4 +1,4 @@
-// Scratchboards: drawings in Riley's "drawing board" style, rendered by the sketch kit (src/lib/sketchKit.ts),
+// Scratchboards: hand-drawn sketching (pencil on paper), rendered by the sketch kit (src/lib/sketchKit.ts),
 // not Excalidraw. The drawing is a list of items, in drawing order (which is also the order Play draws them in):
 //   {kind:"pen", pts:[[x,y],…], color?, w?}                 freehand pencil line (w = line weight, default 2.6)
 //   {kind:"line", a:[x,y], b:[x,y], color?, w?, dashed?}     straight line (dashed for dividers)

@@ -1,9 +1,9 @@
-// Keeps comments on the right line when a script's text is replaced (an AI edit, accepting an edited
+// Keeps comments on the right line when a document's text is replaced (an AI edit, accepting an edited
 // version, restoring an earlier one). Comments are never deleted by edits:
 //  - a comment whose line is kept stays put (lines keep their key);
 //  - if its line comes back (a restore), it returns to it, using the lines it has been on before;
 //  - if its line was rewritten, it moves to the new line that reads most like the old one;
-//  - otherwise it stays on the script as "on a removed line", and reappears if that version is restored.
+//  - otherwise it stays on the project as "on a removed line", and reappears if that version is restored.
 
 import type { MutationCtx } from "./_generated/server";
 import { queueAssetSync } from "./library";
@@ -24,7 +24,7 @@ function similarity(a: string, b: string) {
   return shared / Math.min(A.size, B.size);
 }
 
-export async function reattachComments(ctx: MutationCtx, videoId: Id<"videos">, oldLines: Line[], newLines: Line[], protectedKeys: Set<string>) {
+export async function reattachComments(ctx: MutationCtx, projectId: Id<"projects">, oldLines: Line[], newLines: Line[], protectedKeys: Set<string>) {
   const newKeys = new Set(newLines.map((l) => l.key));
   const oldByKey = new Map(oldLines.map((l) => [l.key, l]));
   const oldKeys = new Set(oldLines.map((l) => l.key));
@@ -32,7 +32,7 @@ export async function reattachComments(ctx: MutationCtx, videoId: Id<"videos">, 
   const fresh = newLines.filter((l) => !oldKeys.has(l.key));
   const comments = await ctx.db
     .query("comments")
-    .withIndex("by_video", (q) => q.eq("videoId", videoId))
+    .withIndex("by_project", (q) => q.eq("projectId", projectId))
     .collect();
   let moved = 0;
   let detached = 0;
@@ -60,6 +60,6 @@ export async function reattachComments(ctx: MutationCtx, videoId: Id<"videos">, 
       moved++;
     } else if (oldKeys.has(c.blockKey)) detached++;
   }
-  await queueAssetSync(ctx, videoId);
+  await queueAssetSync(ctx, projectId);
   return { commentsMoved: moved, commentsOnRemovedLines: detached };
 }

@@ -15,21 +15,21 @@ export type CommentActions = {
 
 export const snippet = (s: string) => (s.length > 90 ? `${s.slice(0, 90)}…` : s);
 
-/** Comment counts per line key, plus the whole-script comments (including ones whose line was removed). */
+/** Comment counts per line key, plus the whole-project comments (including ones whose line was removed). */
 export function groupComments(comments: Comment[], blocks: Block[]) {
   const keys = new Set(blocks.map((b) => b.id));
   const counts: Record<string, number> = {};
-  const script: Comment[] = [];
+  const project: Comment[] = [];
   for (const c of comments) {
     if (c.blockKey && keys.has(c.blockKey)) counts[c.blockKey] = (counts[c.blockKey] ?? 0) + 1;
-    else script.push(c);
+    else project.push(c);
   }
-  return { counts, script };
+  return { counts, project };
 }
 
 /** Keeps the line being commented on in view without moving the page more than needed (see below). */
 export function snapToLine(key: string) {
-  // Computers: never scroll. The sidebar opens beside the script and the line is highlighted where it is.
+  // Computers: never scroll. The sidebar opens beside the document and the line is highlighted where it is.
   // Phones: the comments sheet covers the bottom half, so scroll only if the line would end up hidden under it.
   if (!window.matchMedia("(max-width: 1023px)").matches) return;
   setTimeout(() => {

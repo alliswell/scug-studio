@@ -1,4 +1,4 @@
-// Mymind: saved ideas. Team only; nothing here touches scripts.
+// References: the studio's inspiration board. Team only; nothing here touches projects.
 // People add, edit and delete ideas in the app; agents add them (one at a time or in bulk) through the agent API.
 
 import { ConvexError, v } from "convex/values";

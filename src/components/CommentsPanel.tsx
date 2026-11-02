@@ -12,7 +12,7 @@ import { MindPicker, ideaToAttachment, type MindIdea } from "./MindPicker";
 import { IconClip, IconLink, IconSparkle, IconTrash, IconX } from "./icons";
 
 /**
- * Right-hand panel with the comments on one line, or on the whole script. It reads like a small
+ * Right-hand panel with the comments on one line, or on the whole project. It reads like a small
  * document: each comment is a paragraph with its files and links just beneath it.
  */
 export function CommentsPanel({
@@ -30,12 +30,13 @@ export function CommentsPanel({
   onPlace,
   onNextLine,
   onBackToLine,
+  notice,
   className = "",
 }: {
-  /** Line the new comments go on; null = the whole script */
+  /** Line the new comments go on; null = the whole project */
   blockKey: string | null;
   title: string;
-  /** The line being discussed; omitted for whole-script comments */
+  /** The line being discussed; omitted for whole-project comments */
   quote?: string;
   comments: Comment[];
   /** Missing when the viewer can only read */
@@ -54,6 +55,8 @@ export function CommentsPanel({
   onNextLine?: () => void;
   /** ⌘← in a comment: back to the end of the commented line */
   onBackToLine?: () => void;
+  /** A standing line about who can read this thread, shown above the comments */
+  notice?: string;
   className?: string;
 }) {
   const [dragging, setDragging] = useState(false);
@@ -112,6 +115,9 @@ export function CommentsPanel({
       </div>
 
       <div className="flex flex-col gap-3 px-4">
+        {notice && (
+          <p className="m-0 rounded-lg bg-(--c-b-fdf3cf) px-3 py-2 text-[13px] leading-[1.5] text-(--c-t-7a5b00)">{notice}</p>
+        )}
         {comments.length === 0 && (
           <div className="py-6 text-[14px] text-(--c-t-9a9a9a)">{canWrite ? "No comments yet." : "No comments here."}</div>
         )}
@@ -344,7 +350,7 @@ function CommentItem({
         )}
       </div>
 
-      {/* Comments on the whole script (e.g. a batch of b-roll) can be put on a line later */}
+      {/* Comments on the whole project (a photo dump from a site visit) can be put on a line later */}
       {!showQuote && !c.blockKey && onPlace && (
         <button
           type="button"
@@ -408,7 +414,7 @@ function CommentItem({
               onBackToLine();
             }
           }}
-          placeholder={attachments.length ? "Add instructions for the editor…" : "Write a comment…"}
+          placeholder={attachments.length ? "Say what these are…" : "Write a comment…"}
           aria-label="Comment"
           className="block w-full resize-none overflow-hidden bg-transparent text-[15px] leading-[1.6] text-(--c-t-262626) outline-none placeholder:text-(--c-t-9a9a9a)"
         />

@@ -4,13 +4,13 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type R
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { BLOCK_COLORS, TEXT_COLORS, colorBg, textHex, type Attachment, type Block, type BlockColor, type BlockType, type TextColor } from "@/lib/types";
+import { BLOCK_COLORS, TEXT_COLORS, colorBg, textHex, type Attachment, type Block, type BlockColor, type BlockType, type ProjectType, type TextColor } from "@/lib/types";
 import { uploadToUrl } from "@/lib/upload";
 import { MediaViewer } from "./Attachments";
 import { caretOnFirstLine, caretOnLastLine, getSelectionOffsets, readText, setCaret, writeText } from "@/lib/caret";
-import { isUrl, linkSegments, mentionText, renderLinks, toRawOffset, toggleBold, wrapLink } from "@/lib/scriptLinks";
+import { isUrl, linkSegments, mentionText, renderLinks, toRawOffset, toggleBold, wrapLink } from "@/lib/docLinks";
 import { useRouter } from "next/navigation";
-import { FormatIcon } from "./FormatIcon";
+import { TypeIcon } from "./TypeIcon";
 import { initials, personColor } from "@/lib/people";
 import { listNumbers, uid } from "@/lib/util";
 import { useIsMobile } from "@/lib/useIsMobile";
@@ -19,7 +19,11 @@ import { BoardBlock } from "./BoardBlock";
 import { PICK_FRAME, boardIdFrom, boardRef, frameIdFrom, useCanEditBoards } from "@/lib/boardSource";
 
 type SetBlocks = (fn: (prev: Block[]) => Block[]) => void;
-export type Variant = "script" | "instructions";
+/** "doc" is the full document; "compact" is the tighter list shown inside a tab. */
+export type Variant = "doc" | "compact";
+
+/** A project pill was clicked: the editor that owns it routes there, rather than opening a new tab. */
+const OPEN_PROJECT_EVENT = "studio:open-project";
 
 const isList = (t: BlockType) => t === "bullet" || t === "number" || t === "todo";
 /** How deep sub-bullets go, and how far each level steps in */
@@ -30,15 +34,15 @@ const INDENT_PX = 26;
  * Type for writing: a calm 17px body with roomy line height (like Bear), soft near-black text, and
  * headings that clearly lead their section.
  */
-export function textClass(type: BlockType, variant: Variant = "script") {
-  if (variant === "instructions") return "text-[15px] leading-[1.6]";
+export function textClass(type: BlockType, variant: Variant = "doc") {
+  if (variant === "compact") return "text-[15px] leading-[1.6]";
   if (type === "h1") return "text-[26px] font-semibold leading-[1.3] tracking-[-0.018em] text-(--c-t-1b1b1b)";
   return "text-[17px] leading-[1.7] tracking-[-0.003em] text-(--page-text)";
 }
 
 /** Space inside each line: paragraphs breathe apart, list items stay together as a group. */
-export function rowPadClass(type: BlockType, variant: Variant = "script") {
-  if (variant === "instructions") return "py-[3px]";
+export function rowPadClass(type: BlockType, variant: Variant = "doc") {
+  if (variant === "compact") return "py-[3px]";
   if (type === "h1") return "pt-[2px] pb-[6px]";
   if (isList(type)) return "py-[2px]";
   return "py-[5px]";
@@ -69,7 +73,7 @@ export function BlockPrefix({
   n,
   checked,
   onToggle,
-  variant = "script",
+  variant = "doc",
   className = "",
 }: {
   type: BlockType;
@@ -81,32 +85,32 @@ export function BlockPrefix({
   variant?: Variant;
   className?: string;
 }) {
-  const script = variant === "script";
+  const full = variant === "doc";
   if (type === "todo")
     return (
-      <span className={`flex shrink-0 ${script ? "w-[30px] pt-[6px]" : "w-[25px] pt-[4px]"}`}>
+      <span className={`flex shrink-0 ${full ? "w-[30px] pt-[6px]" : "w-[25px] pt-[4px]"}`}>
         <input
           type="checkbox"
           checked={!!checked}
           disabled={!onToggle}
           onChange={() => onToggle?.()}
           aria-label={checked ? "Mark not done" : "Mark done"}
-          className={`nn-check m-0 cursor-pointer disabled:cursor-default ${script ? "h-[17px] w-[17px]" : "h-[15px] w-[15px]"}`}
-          style={{ accentColor: variant === "instructions" ? "var(--c-t-737373)" : "var(--c-t-1b1b1b)" }}
+          className={`nn-check m-0 cursor-pointer disabled:cursor-default ${full ? "h-[17px] w-[17px]" : "h-[15px] w-[15px]"}`}
+          style={{ accentColor: full ? "var(--c-t-1b1b1b)" : "var(--c-t-737373)" }}
         />
       </span>
     );
   if (type === "bullet")
     return (
       // A round dot centred on the first line, rather than a text bullet that sits low
-      <span aria-hidden="true" className={`flex h-[1.7em] shrink-0 select-none items-center ${script ? "w-[30px] pl-[7px]" : "w-6 pl-1"} ${className}`}>
+      <span aria-hidden="true" className={`flex h-[1.7em] shrink-0 select-none items-center ${full ? "w-[30px] pl-[7px]" : "w-6 pl-1"} ${className}`}>
         <span
           className={`h-[5.5px] w-[5.5px] opacity-70 ${depth % 3 === 1 ? "rounded-full border-[1.3px] border-current" : depth % 3 === 2 ? "rounded-[1px] bg-current" : "rounded-full bg-current"}`}
         />
       </span>
     );
   if (type === "number")
-    return <span className={`shrink-0 select-none tabular-nums ${script ? "w-[30px] pl-[1px] text-(--c-t-8a8a8a)" : "w-6"} ${className}`}>{n}.</span>;
+    return <span className={`shrink-0 select-none tabular-nums ${full ? "w-[30px] pl-[1px] text-(--c-t-8a8a8a)" : "w-6"} ${className}`}>{n}.</span>;
   return null;
 }
 
@@ -139,10 +143,10 @@ const TYPE_WORDS: Record<BlockType, string> = {
 /** Everything the / menu can do to a line, filtered by what's typed after the slash. */
 function slashItems(query: string, variant: Variant, boards: boolean): SlashItem[] {
   const all: SlashItem[] = [
-    ...(variant === "script"
+    ...(variant === "doc"
       ? TURN_INTO.filter((t) => boards || t.type !== "board").map((t) => ({ key: t.type, label: t.label, words: TYPE_WORDS[t.type], group: "Turn into", tile: t.tile, patch: { type: t.type } }))
       : []),
-    ...(variant === "script" && boards
+    ...(variant === "doc" && boards
       ? [
           {
             key: "frame",
@@ -223,7 +227,7 @@ export function DocEditor({
   readOnly,
   canUpload,
   onFiles,
-  variant = "script",
+  variant = "doc",
   activeId,
   onActivate,
   onDropTarget,
@@ -233,7 +237,7 @@ export function DocEditor({
   canToggleTodos,
   placeholder = "Write, or drop a file…",
   footer,
-  boardName,
+  docTitle,
   listOnly,
   people,
   mentions,
@@ -256,13 +260,13 @@ export function DocEditor({
   canToggleTodos?: boolean;
   placeholder?: string;
   footer?: ReactNode;
-  /** The script's title: a board made from a board block is named after it ("Title", then "Title 2"…) */
-  boardName?: string;
+  /** The document's title: a board made from a board block is named after it ("Title", then "Title 2"…) */
+  docTitle?: string;
   /** Everything is a bullet (the Todo list): Enter never leaves the list, Backspace never turns a bullet into text */
   listOnly?: boolean;
   /** The team: shows who each to-do is assigned to, with a picker */
   people?: Person[];
-  /** Scripts you can mention with @ (shown as pills) */
+  /** Projects you can mention with @ (shown as pills) */
   mentions?: Mentionable[];
 }) {
   const canBoards = useCanEditBoards();
@@ -293,7 +297,7 @@ export function DocEditor({
     setSlashState(s);
   }, []);
 
-  /** The @ menu: mention a script (where the @ is, what's typed after it) */
+  /** The @ menu: mention a project (where the @ is, what's typed after it) */
   const [mention, setMentionState] = useState<{ id: string; start: number; query: string; top: number; left: number; up: boolean; active: number } | null>(null);
   const mentionRef = useRef(mention);
   const setMention = useCallback((m: typeof mention) => {
@@ -306,11 +310,11 @@ export function DocEditor({
     mentionsRef.current = mentions;
   }, [mentions]);
   const router = useRouter();
-  // Clicking a script pill opens it here (not in a new tab)
+  // Clicking a project pill opens it here (not in a new tab)
   useEffect(() => {
     const go = (e: Event) => router.push((e as CustomEvent<string>).detail);
-    window.addEventListener("nn:open-script", go);
-    return () => window.removeEventListener("nn:open-script", go);
+    window.addEventListener(OPEN_PROJECT_EVENT, go);
+    return () => window.removeEventListener(OPEN_PROJECT_EVENT, go);
   }, [router]);
 
   // ---- Images blocks: upload pasted/dropped/picked pictures and add them to the block ----
@@ -516,7 +520,7 @@ export function DocEditor({
       if (readOnly) return;
       const caret = getSelectionOffsets(el)?.start ?? text.length;
       const open = slashRef.current;
-      // Typing @ (at the start or after a space) mentions a script
+      // Typing @ (at the start or after a space) mentions a project
       const m = mentionRef.current;
       // (an @ at the start or after a space, with a word or nothing after it yet; Escape dismisses that one)
       const at = mentionsRef.current ? text.slice(0, caret).match(/(^|\s)@([^\s@[\]()]{0,40})$/) : null;
@@ -553,9 +557,9 @@ export function DocEditor({
     [update, readOnly, variant, setSlash, canBoards, setMention],
   );
 
-  /** Puts the picked script in place of the "@words" typed */
+  /** Puts the picked project in place of the "@words" typed */
   const applyMention = useCallback(
-    (script: Mentionable) => {
+    (project: Mentionable) => {
       const m = mentionRef.current;
       if (!m) return;
       setMention(null);
@@ -564,7 +568,7 @@ export function DocEditor({
       const el = els.current.get(m.id);
       const text = el ? readText(el) : b.content;
       const end = Math.min(text.length, m.start + 1 + m.query.length);
-      const pill = mentionText(script.title, script.id, window.location.origin) + " ";
+      const pill = mentionText(project.title, project.id, window.location.origin) + " ";
       focusBlock(m.id, m.start + pill.length);
       update(m.id, { content: text.slice(0, m.start) + pill + text.slice(end) });
     },
@@ -708,7 +712,7 @@ export function DocEditor({
         startLineSel(list[index + 1].id);
         return;
       }
-      // ⌘A a second time selects the whole script's text
+      // ⌘A a second time selects the whole document's text
       if (!readOnly && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && list.length > 1 && sel.start === 0 && sel.end === text.length) {
         e.preventDefault();
         selectAllReq.current = true;
@@ -747,7 +751,7 @@ export function DocEditor({
           return;
         }
         if (isList(block.type) && text === "" && listOnly) return;
-        if (isList(block.type) && text === "" && variant === "script") {
+        if (isList(block.type) && text === "" && variant === "doc") {
           focusBlock(id, 0);
           update(id, { type: "p" });
           return;
@@ -788,7 +792,7 @@ export function DocEditor({
           update(id, { indent: (block.indent ?? 0) - 1 || undefined });
           return;
         }
-        if (block.type !== "p" && !(variant === "instructions" && block.type === "todo") && !(listOnly && isList(block.type))) {
+        if (block.type !== "p" && !(variant === "compact" && block.type === "todo") && !(listOnly && isList(block.type))) {
           e.preventDefault();
           focusBlock(id, 0);
           update(id, { type: "p" });
@@ -866,10 +870,10 @@ export function DocEditor({
         update(id, { content: w.text });
         return;
       }
-      // A Native Note board link pasted on an empty line shows that board
+      // A board link pasted on an empty line shows that board
       // …and a frame link (from Copy frame, or Excalidraw's "Copy link to object" on a frame) shows that frame
       const boardLink =
-        lines.length === 1 && !text.trim() && variant === "script" && !readOnly
+        lines.length === 1 && !text.trim() && variant === "doc" && !readOnly
           ? pasted.trim().match(/^https?:\/\/[^/\s]+\/b\/([a-z0-9]{20,40})\/?(?:[?#](?:frame|element)=([\w-]+))?$/i)
           : null;
       if (boardLink && new URL(pasted.trim()).origin === window.location.origin) {
@@ -886,7 +890,7 @@ export function DocEditor({
         const parsed = parseLine(l);
         return {
           ...parsed,
-          type: variant === "instructions" && parsed.type === "p" ? ("todo" as BlockType) : parsed.type,
+          type: variant === "compact" && parsed.type === "p" ? ("todo" as BlockType) : parsed.type,
           id: uid(),
           
         };
@@ -959,7 +963,7 @@ export function DocEditor({
     setMenuFor(null);
     setBlocks((prev) => {
       const next = prev.filter((b) => b.id !== id);
-      return next.length ? next : [{ id: uid(), type: variant === "instructions" ? "todo" : "p", content: "" }];
+      return next.length ? next : [{ id: uid(), type: variant === "compact" ? "todo" : "p", content: "" }];
     });
   };
   const moveBlock = (dragId: string, targetId: string, after: boolean) => {
@@ -1021,7 +1025,7 @@ export function DocEditor({
       const ids = new Set(list.slice(lo, hi + 1).map((b) => b.id));
       const before = list[lo - 1];
       const after = list[hi + 1];
-      const fresh: Block = { id: uid(), type: variant === "instructions" ? "todo" : "p", content: "" };
+      const fresh: Block = { id: uid(), type: variant === "compact" ? "todo" : "p", content: "" };
       if (before) focusBlock(before.id, "end");
       else if (after) focusBlock(after.id, 0);
       else focusBlock(fresh.id, 0);
@@ -1106,7 +1110,7 @@ export function DocEditor({
       const row = elOf?.closest("[data-row-id]") as HTMLElement | null;
       let i = row && root?.contains(row) ? list.findIndex((b) => b.id === row.dataset.rowId) : -1;
       if (i < 0) {
-        // Outside the script (e.g. the title): clamp to its first or last line
+        // Outside the document (e.g. the title): clamp to its first or last line
         const before = !!root && !!(root.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING);
         i = before ? 0 : list.length - 1;
         const b = list[i];
@@ -1219,7 +1223,7 @@ export function DocEditor({
   }, [freeSel, setBlocks]);
 
   const numbers = listNumbers(blocks);
-  const muted = variant === "instructions";
+  const muted = variant === "compact";
 
   return (
     <div ref={rootRef} className="relative">
@@ -1436,11 +1440,11 @@ export function DocEditor({
                   <BoardBlock
                     block={b}
                     newBoardName={
-                      boardName?.trim()
+                      docTitle?.trim()
                         ? (() => {
-                            // Boards this script already shows; the new one comes after them
+                            // Boards this document already shows; the new one comes after them
                             const n = blocks.filter((x) => x.type === "board" && x.content && x.id !== b.id).length;
-                            return n ? `${boardName.trim()} ${n + 1}` : boardName.trim();
+                            return n ? `${docTitle.trim()} ${n + 1}` : docTitle.trim();
                           })()
                         : undefined
                     }
@@ -1605,7 +1609,7 @@ function BlockMenu({
       aria-label="Block options"
       className="absolute left-0 top-8 z-30 flex w-[248px] flex-col gap-0.5 rounded-xl border border-(--c-l-ebebeb) bg-(--c-b-ffffff) p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.10),0_2px_6px_rgba(0,0,0,0.05)]"
     >
-      {variant === "script" && (
+      {variant === "doc" && (
         <>
           <div className="px-2 pb-1 pt-2 text-[12px] text-(--c-t-737373)">Turn into</div>
           {TURN_INTO.filter((t) => canBoards || t.type !== "board").map((t) => (
@@ -1798,7 +1802,7 @@ function LinkBox({ top, left, onSave, onCancel }: { top: number; left: number; o
       onMouseDown={(e) => e.stopPropagation()}
     >
       <input
-        id="script-link-url"
+        id="doc-link-url"
         autoFocus
         value={url}
         onChange={(e) => setUrl(e.target.value)}
@@ -1895,11 +1899,11 @@ const EditableText = memo(function EditableText({
       className={`${className} editable`}
       onMouseDown={(e) => {
         const el = e.currentTarget;
-        const link = (e.target as HTMLElement).closest("a[data-script-link]") as HTMLAnchorElement | null;
+        const link = (e.target as HTMLElement).closest("a[data-doc-link]") as HTMLAnchorElement | null;
         // Clicking a link opens it; clicking elsewhere on the line edits it
         if (link) {
           e.preventDefault();
-          if (link.dataset.internal !== undefined) window.dispatchEvent(new CustomEvent("nn:open-script", { detail: link.getAttribute("href") }));
+          if (link.dataset.internal !== undefined) window.dispatchEvent(new CustomEvent(OPEN_PROJECT_EVENT, { detail: link.getAttribute("href") }));
           else window.open(link.href, "_blank", "noopener,noreferrer");
           return;
         }
@@ -2128,9 +2132,9 @@ function AssignChip({ people, value, readOnly, onChange }: { people: Person[]; v
   );
 }
 
-export type Mentionable = { id: string; title: string; format: "long" | "short" };
+export type Mentionable = { id: string; title: string; type: ProjectType };
 
-/** Scripts whose title has every word typed after the @, best first */
+/** Projects whose title has every word typed after the @, best first */
 function mentionMatches(all: Mentionable[], query: string) {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const hits = all.filter((s) => {
@@ -2155,7 +2159,7 @@ function MentionMenu({
   return (
     <div
       role="listbox"
-      aria-label="Mention a script"
+      aria-label="Mention a project"
       onMouseDown={(e) => e.preventDefault()}
       className="fixed z-50 w-[300px] max-w-[calc(100vw-24px)] rounded-xl border border-(--c-l-e5e5e5) bg-(--c-b-ffffff) p-1 shadow-[0_12px_32px_rgba(0,0,0,0.12)]"
       style={{
@@ -2164,9 +2168,9 @@ function MentionMenu({
         left: Math.max(12, Math.min(at.left, (typeof window === "undefined" ? 800 : window.innerWidth) - 312)),
       }}
     >
-      <div className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.05em] text-(--c-t-9a9a9a)">Scripts</div>
+      <div className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.05em] text-(--c-t-9a9a9a)">Projects</div>
       {items.length === 0 ? (
-        <div className="px-2 py-2 text-[13.5px] text-(--c-t-9a9a9a)">No script matches “{at.query}”</div>
+        <div className="px-2 py-2 text-[13.5px] text-(--c-t-9a9a9a)">No project matches “{at.query}”</div>
       ) : (
         items.map((s, i) => (
           <button
@@ -2179,7 +2183,7 @@ function MentionMenu({
             className={`flex h-[34px] w-full items-center gap-2.5 rounded-md px-2 text-left text-[14px] text-(--c-t-1b1b1b) ${i === at.active ? "bg-(--c-b-f1f1ef)" : ""}`}
           >
             <span className="flex w-4 shrink-0 justify-center text-(--c-t-8a8a8a)">
-              <FormatIcon format={s.format} size={14} />
+              <TypeIcon type={s.type} className="h-[14px] w-[14px]" />
             </span>
             <span className={`min-w-0 flex-1 truncate ${s.title.trim() ? "" : "text-(--c-t-9a9a9a)"}`}>{s.title.trim() || "Untitled"}</span>
           </button>

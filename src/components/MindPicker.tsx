@@ -34,7 +34,7 @@ export function ideaToAttachment(i: MindIdea): Attachment | null {
   return { id: uid(), kind: "link", url: i.url, storageId: null, name, mime: null, size: null };
 }
 
-/** The "@" menu in a comment: search Mymind and pick an idea to add. Arrow keys + Enter, or click. */
+/** The "@" menu in a comment: search References and pick one to add. Arrow keys + Enter, or click. */
 export function MindPicker({
   query,
   onPick,
@@ -75,19 +75,19 @@ export function MindPicker({
     <div
       ref={box}
       role="listbox"
-      aria-label="Mymind ideas"
+      aria-label="References"
       onMouseDown={(e) => e.preventDefault()}
       className="mt-1.5 max-h-[60vh] overflow-y-auto rounded-xl border border-(--c-l-e5e5e5) bg-(--c-b-ffffff) p-1 shadow-[0_8px_24px_rgba(0,0,0,0.08)]"
     >
       <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-[0.05em] text-(--c-t-9a9a9a)">
-        Mymind{query ? ` · "${query}"` : ""}
+        References{query ? ` · "${query}"` : ""}
       </div>
       {ideas.length === 0 ? (
-        <div className="px-2 py-3 text-[13px] text-(--c-t-9a9a9a)">{search ? "No ideas match." : "Nothing in Mymind yet."}</div>
+        <div className="px-2 py-3 text-[13px] text-(--c-t-9a9a9a)">{search ? "Nothing matches." : "Nothing saved yet."}</div>
       ) : (
         ideas.map((i, n) => {
           const thumb = i.kind === "image" ? (i.fileUrl ?? i.url) : null;
-          // Tweets, videos and other social links: show the same preview card as in comments
+          // Posts, videos and other social links: show the same preview card as in comments
           if (i.url && hasLinkCard(i.url) && !thumb)
             return (
               <button

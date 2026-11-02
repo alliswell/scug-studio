@@ -88,8 +88,8 @@ export function emptyBlock(): Block {
   return { id: uid(), type: "p", content: "" };
 }
 
-/** The script as plain text (Markdown-style list markers), for copying elsewhere. */
-export function scriptToText(title: string, blocks: Block[]) {
+/** The document as plain text (Markdown-style list markers), for copying elsewhere. */
+export function docToText(title: string, blocks: Block[]) {
   const numbers = listNumbers(blocks);
   const lines = blocks.map((b) => {
     if (b.type === "h1") return `\n# ${b.content}`;

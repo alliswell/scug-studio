@@ -1,4 +1,4 @@
-// "Export all attachments" on share links: one zip with every file from the comments, in script order,
+// "Export all attachments" on share links: one zip with every file from the comments, in document order,
 // plus Links.html listing every link (attached or written in a comment) with the line it was on.
 
 import type { Block, Comment } from "./types";
@@ -20,7 +20,7 @@ export async function exportAttachments(title: string, blocks: Block[], comments
   const whereOf = (c: Comment) => {
     const line = c.blockKey ? lineText.get(c.blockKey) : undefined;
     if (line !== undefined) return `Line ${(order.get(c.blockKey!) ?? 0) + 1}: ${line.slice(0, 80)}`;
-    return c.blockKey ? `Removed line: ${(c.quote ?? "").slice(0, 80)}` : "Whole script";
+    return c.blockKey ? `Removed line: ${(c.quote ?? "").slice(0, 80)}` : "Whole project";
   };
 
   const files: { url: string; name: string; c: Comment }[] = [];
@@ -72,7 +72,7 @@ export async function exportAttachments(title: string, blocks: Block[], comments
 h1{font-size:24px;margin:0 0 4px}p.sub{color:#737373;margin:0 0 24px}h2{font-size:16px;margin:28px 0 8px}
 table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #ebebeb;vertical-align:top;font-size:14px}
 th{font-size:12px;color:#737373;font-weight:500}a{color:#2358d8;word-break:break-all}.none{color:#9a9a9a}</style>
-<h1>${esc(title)}</h1><p class="sub">Exported from Native Note on ${esc(new Date().toLocaleString())} · ${files.length - failed.length} files in this zip</p>
+<h1>${esc(title)}</h1><p class="sub">Exported from Switchyards Studio on ${esc(new Date().toLocaleString())} · ${files.length - failed.length} files in this zip</p>
 <h2>Links (${links.length})</h2>${table(links)}
 ${failed.length ? `<h2>Files that couldn't be downloaded (${failed.length})</h2>${table(failed)}` : ""}`,
   );
@@ -81,7 +81,7 @@ ${failed.length ? `<h2>Files that couldn't be downloaded (${failed.length})</h2>
   const href = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = href;
-  a.download = `${safeName(title || "Script")} - attachments.zip`;
+  a.download = `${safeName(title || "Project")} - attachments.zip`;
   document.body.appendChild(a);
   a.click();
   a.remove();

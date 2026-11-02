@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// Scratchboard: a drawing board in Riley's "drawing board" style (pencil on warm paper), drawn with the
+// Scratchboard: a drawing board in a hand-drawn style (pencil on warm paper), drawn with the
 // sketch kit from the style artifact, not Excalidraw. Same keyboard shortcuts as Excalidraw.
 
 import { useMutation, useQuery } from "convex/react";

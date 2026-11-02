@@ -5,14 +5,17 @@ import { uid } from "@/lib/util";
 import { DocEditor } from "./DocEditor";
 import { IconPlus } from "./icons";
 
-/** "2/5" (done/total) for the tab label, or "" when there are no instructions yet. */
-export function instructionsProgress(blocks: Block[]) {
+/** "2/5" (done/total) for the tab label, or "" when nothing is on the list yet. */
+export function taskProgress(blocks: Block[]) {
   const todos = blocks.filter((b) => b.type === "todo" && b.content.trim());
   return todos.length ? `${todos.filter((b) => b.checked).length}/${todos.length}` : "";
 }
 
-/** Lighter-grey to-do list for the video editor, shown in the tabs above the script. */
-export function Instructions({
+/**
+ * The project's to-do list, shown in a tab above the document: a punch list on a build-out,
+ * a checklist on digital work. Same list either way — only the words change.
+ */
+export function TaskList({
   blocks,
   setBlocks,
   readOnly,
@@ -21,6 +24,8 @@ export function Instructions({
   activeId,
   onOpenComments,
   commentCounts,
+  label,
+  addLabel,
 }: {
   blocks: Block[];
   setBlocks: (fn: (prev: Block[]) => Block[]) => void;
@@ -30,9 +35,13 @@ export function Instructions({
   activeId?: string | null;
   onOpenComments?: (id: string, opts?: { newComment?: boolean }) => void;
   commentCounts?: Record<string, number>;
+  /** What this list is called on this project ("Punch list", "Checklist") */
+  label: string;
+  /** The placeholder and the add button ("Add a punch item") */
+  addLabel: string;
 }) {
   return (
-    <section aria-label="Editor instructions">
+    <section aria-label={label}>
       <div className="pl-0.5">
         <DocEditor
           blocks={blocks}
@@ -40,13 +49,13 @@ export function Instructions({
           readOnly={readOnly}
           canUpload={canUpload}
           onFiles={onFiles}
-          variant="instructions"
+          variant="compact"
           canToggleTodos={!readOnly}
           activeId={activeId}
           onOpenComments={onOpenComments}
           canComment={!readOnly}
           commentCounts={commentCounts}
-          placeholder="Add an instruction for the editor"
+          placeholder={addLabel}
           footer={
             !readOnly && (
               <button
@@ -55,13 +64,13 @@ export function Instructions({
                   setBlocks((prev) => {
                     const last = prev[prev.length - 1];
                     if (last && !last.content.trim() && last.type === "todo") return prev;
-                    return [...prev, { id: uid(), type: "todo", content: "", comments: [] }];
+                    return [...prev, { id: uid(), type: "todo", content: "" }];
                   })
                 }
                 className="mt-0.5 inline-flex h-[30px] items-center gap-2 text-[14px] text-(--c-t-737373) hover:text-(--c-t-1b1b1b)"
               >
                 <IconPlus />
-                <span>Add instruction</span>
+                <span>{addLabel}</span>
               </button>
             )
           }

@@ -5,18 +5,19 @@ import Link from "next/link";
 import { useState } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { FORMATS, STATUSES, statusOf, type VideoFormat, type VideoStatus } from "@/lib/types";
-import { FormatIcon } from "./FormatIcon";
+import { ALL_STAGES, PROJECT_TYPES, stageOf, type ProjectType } from "@/lib/types";
+import { TypeIcon } from "./TypeIcon";
 import { linkify } from "./Brief";
 import { IconChevron, IconLink, IconSparkle } from "./icons";
 
 type FeedItem = {
   id: Id<"updates">;
-  videoId: string;
-  videoTitle: string;
-  videoStatus: string;
-  videoFormat: "long" | "short";
-  videoSponsored: string;
+  projectId: string;
+  projectTitle: string;
+  projectStage: string;
+  projectType: ProjectType;
+  clubId: string | null;
+  clubName: string | null;
   urgent: boolean;
   title: string;
   details: string;
@@ -27,16 +28,16 @@ type FeedItem = {
   agent: boolean;
 };
 
-type Filters = { status: "all" | VideoStatus; sponsor: "all" | "sponsored" | "notSponsored"; format: "all" | VideoFormat };
-const ALL: Filters = { status: "all", sponsor: "all", format: "all" };
-const sponsoredValue = (s: string) => s !== "none" && s !== "noSponsor";
+type Filters = { stage: string; type: "all" | ProjectType; club: string };
+const ALL: Filters = { stage: "all", type: "all", club: "all" };
 
 /**
- * The Feed: every video's updates in one timeline, newest first, grouped by day. Urgent updates (need a
+ * The Feed: every project's updates in one timeline, newest first, grouped by day. Urgent updates (need a
  * response now) are pinned on top until someone marks them handled. Its own filters sit at the top.
  */
 export function FeedView() {
   const feed = useQuery(api.updates.feed, { limit: 300 }) as FeedItem[] | undefined;
+  const clubs = useQuery(api.clubs.list);
   const setUrgent = useMutation(api.updates.setUrgent);
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [f, setF] = useState<Filters>(ALL);
@@ -51,9 +52,9 @@ export function FeedView() {
 
   const items = (feed ?? []).filter(
     (u) =>
-      (f.status === "all" || statusOf(u.videoStatus).value === f.status) &&
-      (f.sponsor === "all" || (f.sponsor === "sponsored") === sponsoredValue(u.videoSponsored)) &&
-      (f.format === "all" || u.videoFormat === f.format),
+      (f.stage === "all" || u.projectStage === f.stage) &&
+      (f.type === "all" || u.projectType === f.type) &&
+      (f.club === "all" || (f.club === "none" ? !u.clubId : u.clubId === f.club)),
   );
   const urgent = items.filter((u) => u.urgent).sort((a, b) => b.happenedAt - a.happenedAt);
   const rest = items.filter((u) => !u.urgent);
@@ -65,7 +66,7 @@ export function FeedView() {
     if (last?.key === key) last.items.push(u);
     else days.push({ key, label: dayLabel(d), items: [u] });
   }
-  const filtered = f.status !== "all" || f.sponsor !== "all" || f.format !== "all";
+  const filtered = f.stage !== "all" || f.type !== "all" || f.club !== "all";
 
   const row = (u: FeedItem) => (
     <Row key={u.id} u={u} open={open.has(u.id)} onToggle={() => toggle(u.id)} onUrgent={(v) => void setUrgent({ id: u.id, urgent: v })} />
@@ -75,26 +76,27 @@ export function FeedView() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center gap-2">
         <FilterSelect
-          label="Status"
-          value={f.status}
-          onChange={(status) => setF({ ...f, status: status as Filters["status"] })}
-          options={[{ value: "all", label: "All statuses" }, ...STATUSES.map((s) => ({ value: s.value, label: s.label }))]}
+          label="Stage"
+          value={f.stage}
+          onChange={(stage) => setF({ ...f, stage })}
+          // Both pipelines, since the Feed mixes types; the two share no stage values
+          options={[{ value: "all", label: "All stages" }, ...ALL_STAGES.map((s) => ({ value: s.value, label: `${s.glyph} ${s.label}` }))]}
         />
         <FilterSelect
-          label="Sponsorship"
-          value={f.sponsor}
-          onChange={(sponsor) => setF({ ...f, sponsor: sponsor as Filters["sponsor"] })}
+          label="Type"
+          value={f.type}
+          onChange={(type) => setF({ ...f, type: type as Filters["type"] })}
+          options={[{ value: "all", label: "All types" }, ...PROJECT_TYPES.map((x) => ({ value: x.value, label: x.label }))]}
+        />
+        <FilterSelect
+          label="Club"
+          value={f.club}
+          onChange={(club) => setF({ ...f, club })}
           options={[
-            { value: "all", label: "All sponsorships" },
-            { value: "sponsored", label: "Sponsored" },
-            { value: "notSponsored", label: "Not sponsored" },
+            { value: "all", label: "All clubs" },
+            { value: "none", label: "Network-wide" },
+            ...(clubs ?? []).map((c) => ({ value: c._id as string, label: c.name })),
           ]}
-        />
-        <FilterSelect
-          label="Format"
-          value={f.format}
-          onChange={(format) => setF({ ...f, format: format as Filters["format"] })}
-          options={[{ value: "all", label: "All formats" }, ...FORMATS.map((x) => ({ value: x.value, label: x.label }))]}
         />
         {filtered && (
           <button type="button" onClick={() => setF(ALL)} className="h-8 rounded-full px-3 text-[13px] text-(--c-t-737373) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)">
@@ -107,14 +109,14 @@ export function FeedView() {
         <div className="h-10" />
       ) : items.length === 0 ? (
         <p className="m-0 py-10 text-center text-[14px] text-(--c-t-737373)">
-          {filtered ? "No updates for these filters." : "No updates yet. New emails, calls and approvals show up here as they're logged."}
+          {filtered ? "No updates for these filters." : "No updates yet. Site visits, vendor calls and approvals show up here as they're logged."}
         </p>
       ) : (
         <>
           {urgent.length > 0 && (
             <section aria-label="Urgent" className="rounded-2xl bg-(--c-b-fef6f5) p-2 ring-1 ring-(--c-l-f6d5d1)">
               <h2 className="m-0 flex items-center gap-2 px-2 pb-1 pt-1.5 text-[13px] font-semibold text-(--c-t-b42318)">
-                <span className="h-2 w-2 rounded-full bg-(--c-b-d92d20)" aria-hidden="true" />
+                <span aria-hidden="true">✕</span>
                 Urgent · needs a response
                 <span className="font-normal text-(--c-t-b42318) opacity-70">{urgent.length}</span>
               </h2>
@@ -135,15 +137,20 @@ export function FeedView() {
 
 function Row({ u, open, onToggle, onUrgent }: { u: FeedItem; open: boolean; onToggle: () => void; onUrgent: (v: boolean) => void }) {
   const expandable = !!u.details.trim();
+  const st = stageOf(u.projectStage, u.projectType);
   return (
     <li className="group rounded-xl bg-(--c-b-ffffff) px-4 py-3 ring-1 ring-(--c-l-ebebeb) transition-shadow hover:shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-[12px]">
-            <FormatIcon format={u.videoFormat} size={12} />
-            <Link href={`/v/${u.videoId}`} className="truncate font-medium text-(--c-t-6b6b6b) no-underline hover:text-(--c-t-1b1b1b) hover:underline">
-              {u.videoTitle || "Untitled"}
+          <div className="flex items-center gap-2 text-[12px] text-(--c-t-8a8a8a)">
+            <TypeIcon type={u.projectType} size={12} />
+            <Link href={`/p/${u.projectId}`} className="truncate font-medium text-(--c-t-6b6b6b) no-underline hover:text-(--c-t-1b1b1b) hover:underline">
+              {u.projectTitle || "Untitled"}
             </Link>
+            <span className="shrink-0 whitespace-nowrap" style={{ color: st.hex }} title={`${st.label} (${st.colorName})`}>
+              {st.glyph} {st.label}
+            </span>
+            {u.clubName && <span className="truncate">· {u.clubName}</span>}
           </div>
           <button
             type="button"

@@ -1,9 +1,9 @@
-// Files for agents: put images, videos, PDFs or any file into comments without a browser.
+// Files for agents: put renders, drawings, PDFs or any file into comments without a browser.
 //
 // Each attachment is ONE of:
 //   { url }              A link (image/video URLs show as media). Nothing is copied.
-//   { base64, name }     The bytes inline (raw base64 or a data: URL). Stored in Native Note. Small files.
-//   { storageId }        A file uploaded to Native Note: get_upload_url, then POST the raw file there. Any size.
+//   { base64, name }     The bytes inline (raw base64 or a data: URL). Stored in the studio. Small files.
+//   { storageId }        A file uploaded to the studio: get_upload_url, then POST the raw file there. Any size.
 
 import { ConvexError, v, type Infer } from "convex/values";
 import { internalMutation, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server";
@@ -84,7 +84,14 @@ export async function resolveAttachments(ctx: ActionCtx, items: AttachmentInput[
   return out;
 }
 
-/** Turns a resolved attachment into what a comment stores. */
+/**
+ * Turns a resolved attachment into what a comment stores.
+ *
+ * This writes the download URL onto the row, frozen at attach time. That is right for a comment,
+ * whose files are read far more often than they are written. Do NOT copy the pattern for review
+ * rounds: a sheet is re-read for months and a stale URL means a drawing nobody can open, so
+ * convex/reviews.ts resolves its file URLs at read time instead.
+ */
 export async function toAttachment(ctx: MutationCtx, a: Resolved): Promise<Doc<"comments">["attachments"][number]> {
   const name = a.name?.slice(0, 200) ?? null;
   if (a.storageId) {
@@ -104,13 +111,13 @@ export const attach = internalMutation({
   handler: async (ctx, { comment, attachments }) => {
     const id = ctx.db.normalizeId("comments", comment);
     const c = id ? await ctx.db.get(id) : null;
-    if (!c) throw new ConvexError("Comment not found. Pass a comment id from comment_on_script or get_script.");
+    if (!c) throw new ConvexError("Comment not found. Pass a comment id from comment_on_project or get_project.");
     if (c.attachments.length + attachments.length > 50) throw new ConvexError("A comment can hold at most 50 files");
     const added = [];
     for (const a of attachments) added.push(await toAttachment(ctx, a));
     const now = Date.now();
     await ctx.db.patch(c._id, { attachments: [...c.attachments, ...added], updatedAt: now });
-    await ctx.db.patch(c.videoId, { updatedAt: now });
+    await ctx.db.patch(c.projectId, { updatedAt: now });
     return { comment: c._id, attached: added.map((a) => ({ name: a.name, kind: a.kind, url: a.url })) };
   },
 });

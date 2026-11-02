@@ -65,7 +65,7 @@ export default function Fixture(){
  {blur!==null&&<BlurToggle root={root} on={blur} onToggle={()=>setBlur(api.current,!blur)}/>}
  <Excalidraw theme={dark?"dark":"light"} excalidrawAPI={a=>{api.current=a;window.nnAPI=a;window.nnFixtureTools={restoreElements,reconcileElements,exportToSvg,exportToCanvas,convertToExcalidrawElements,CaptureUpdateAction}}}
  initialData={{elements:initial,appState:{scrollX:0,scrollY:0,zoom:{value:1},selectedElementIds:{"gradient-target":true}}}} onChange={change}/>
- </div><div style={{padding:20}}><h3>Native Note board SVG preview</h3>{scene&&<BoardDrawing scene={scene} maxHeight={260} dark={dark}/>}<div id="exports"/></div></>;
+ </div><div style={{padding:20}}><h3>Board SVG preview</h3>{scene&&<BoardDrawing scene={scene} maxHeight={260} dark={dark}/>}<div id="exports"/></div></>;
 }`);
 const production = process.argv.includes("--production");
 const run = (args) => new Promise((resolve) => {

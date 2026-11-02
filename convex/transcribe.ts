@@ -1,5 +1,5 @@
 "use node";
-// Transcribes Edit Feed versions with word timings. Uses whichever speech-to-text key is set on the Convex
+// Writes out voice notes with word timings. Uses whichever speech-to-text key is set on the Convex
 // deployment: ELEVENLABS_API_KEY (Scribe v2, the most accurate), DEEPGRAM_API_KEY or OPENAI_API_KEY, in that order.
 
 import { v } from "convex/values";
@@ -42,11 +42,13 @@ async function elevenlabs(key: string, url: string, model = "scribe_v2"): Promis
 
 async function openai(key: string, url: string, mime: string | undefined): Promise<Word[]> {
   const file = await fetch(url);
-  if (!file.ok) throw new Error(`Couldn't download the video (${file.status})`);
+  if (!file.ok) throw new Error(`Couldn't download the recording (${file.status})`);
   const blob = await file.blob();
   if (blob.size > 25 * 1024 * 1024) throw new Error("OpenAI only transcribes files up to 25 MB");
+  const type = mime ?? blob.type ?? "audio/webm";
   const form = new FormData();
-  form.append("file", new Blob([await blob.arrayBuffer()], { type: mime ?? blob.type ?? "video/mp4" }), mime?.includes("quicktime") ? "video.mov" : "video.mp4");
+  // Whisper picks its decoder from the filename, so the extension has to match the type
+  form.append("file", new Blob([await blob.arrayBuffer()], { type }), `recording.${type.split("/")[1]?.split(";")[0] || "webm"}`);
   form.append("model", "whisper-1");
   form.append("response_format", "verbose_json");
   form.append("timestamp_granularities[]", "word");
@@ -55,40 +57,6 @@ async function openai(key: string, url: string, mime: string | undefined): Promi
   const data = await res.json();
   return (data?.words ?? []).map((x: { word: string; start: number; end: number }) => ({ w: x.word.trim(), s: round(x.start), e: round(x.end) }));
 }
-
-export const version = internalAction({
-  args: { versionId: v.id("editVersions") },
-  handler: async (ctx, { versionId }): Promise<null> => {
-    const info = await ctx.runQuery(internal.editFeedInternal.versionFile, { versionId });
-    if (!info?.url) {
-      await ctx.runMutation(internal.editFeedInternal.saveTranscript, { versionId, status: "failed", words: [], error: "No video file" });
-      return null;
-    }
-    const keys = { deepgram: process.env.DEEPGRAM_API_KEY, elevenlabs: process.env.ELEVENLABS_API_KEY, openai: process.env.OPENAI_API_KEY };
-    const provider = keys.elevenlabs ? "elevenlabs" : keys.deepgram ? "deepgram" : keys.openai ? "openai" : null;
-    if (!provider) {
-      await ctx.runMutation(internal.editFeedInternal.saveTranscript, {
-        versionId,
-        status: "unavailable",
-        words: [],
-        error: "No transcription key is set up yet (ELEVENLABS_API_KEY, DEEPGRAM_API_KEY or OPENAI_API_KEY)",
-      });
-      return null;
-    }
-    try {
-      const words =
-        provider === "deepgram"
-          ? await deepgram(keys.deepgram!, info.url)
-          : provider === "elevenlabs"
-            ? await elevenlabs(keys.elevenlabs!, info.url)
-            : await openai(keys.openai!, info.url, info.mime ?? undefined);
-      await ctx.runMutation(internal.editFeedInternal.saveTranscript, { versionId, status: "done", words, provider });
-    } catch (e) {
-      await ctx.runMutation(internal.editFeedInternal.saveTranscript, { versionId, status: "failed", words: [], provider, error: e instanceof Error ? e.message.slice(0, 300) : "Transcription failed" });
-    }
-    return null;
-  },
-});
 
 /** A voice note on a PDF, written out (when a speech-to-text key is set up; otherwise it stays a recording) */
 export const pdfVoiceNote = internalAction({

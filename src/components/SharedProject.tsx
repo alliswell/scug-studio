@@ -16,15 +16,22 @@ import { Lightbox } from "./Attachments";
 import { CommentsPanel } from "./CommentsPanel";
 import { DocEditor } from "./DocEditor";
 import { DiffBlocks } from "./DiffView";
-import { Captions } from "./Captions";
-import { Instructions, instructionsProgress } from "./Instructions";
+import { TaskList, taskProgress } from "./Instructions";
 import { cleanImages } from "@/lib/sync";
-import { ScriptLayout, primaryButton, topButton } from "./ScriptLayout";
-import { ScriptTabs, type ScriptTab } from "./ScriptTabs";
-import { VideoDetails, VideoTitle } from "./VideoMeta";
+import { PageLayout, primaryButton, topButton } from "./PageLayout";
+import { Tabs, type Tab } from "./Tabs";
+import { ProjectDetails, ProjectTitle } from "./ProjectMeta";
 import { IconComments, IconDownload, IconEye, IconPencil } from "./icons";
 
-const SCRIPT = "__script__";
+const PROJECT = "__project__";
+
+/**
+ * Everyone holding the link reads the same comment thread, internal notes included: `comments.listShared`
+ * returns every comment on the project, and nothing on this page can tell a guest's from the studio's.
+ * Rather than quietly hiding some, the page says so plainly wherever comments are shown, so nobody
+ * writes something here thinking a GC or a landlord won't see it.
+ */
+const COMMENTS_ARE_PUBLIC = "Anyone with this link can read these comments, including the studio's own notes. Keep anything private off this thread.";
 
 const noop = () => {};
 
@@ -56,8 +63,8 @@ const copyOf = (blocks: Block[]): Block[] =>
 
 type Creds = { passcode: string; name: string };
 
-/** Public page for a share link: this one script, read-only, plus passcode-protected suggested edits. */
-export function SharedScript({ slug }: { slug: string }) {
+/** Public page for a share link: this one project, read-only, plus passcode-protected suggested edits. */
+export function SharedProject({ slug }: { slug: string }) {
   const convex = useConvex();
   const shared = useQuery(api.share.get, { slug });
   const [token, setToken] = useState<string | undefined>(undefined);
@@ -90,12 +97,12 @@ export function SharedScript({ slug }: { slug: string }) {
   );
 
   useEffect(() => {
-    if (shared?.video) document.title = shared.video.title || "Untitled script";
-  }, [shared?.video]);
+    if (shared?.project) document.title = shared.project.title || "Untitled project";
+  }, [shared?.project]);
 
   // Same browser session: pick up an earlier edit
   useEffect(() => {
-    if (!shared?.video.canEdit || resumed.current) return;
+    if (!shared?.project.canEdit || resumed.current) return;
     resumed.current = true;
     const saved = store("session")?.getItem(`guest:${slug}`);
     if (!saved) return;
@@ -109,7 +116,7 @@ export function SharedScript({ slug }: { slug: string }) {
         }
       })
       .catch(() => store("session")?.removeItem(`guest:${slug}`));
-  }, [shared?.video.canEdit, slug, fetchMine]);
+  }, [shared?.project.canEdit, slug, fetchMine]);
 
   const save = useCallback(
     async (blocks: Block[]) => {
@@ -182,8 +189,8 @@ export function SharedScript({ slug }: { slug: string }) {
   const openComments = (key: string, opts?: { newComment?: boolean }) => {
     setOpenId(key);
     setFocusComment(null);
-    if (key !== SCRIPT) snapToLine(key);
-    if (opts?.newComment && actions) void actions.add(key === SCRIPT ? null : key);
+    if (key !== PROJECT) snapToLine(key);
+    if (opts?.newComment && actions) void actions.add(key === PROJECT ? null : key);
   };
   const closeComments = () => {
     setOpenId(null);
@@ -215,22 +222,30 @@ export function SharedScript({ slug }: { slug: string }) {
     );
 
   const original = shared.blocks.map(fromServer);
-  const instructions = shared.instructions.map(fromServer);
-  const hasInstructions = instructions.some((b) => b.content.trim());
+  const tasks = shared.tasks.map(fromServer);
+  const hasTasks = tasks.some((b) => b.content.trim());
   const docBlocks = mode === "view" ? original : (mine ?? original);
   const keyOf = (b: Block) => (mode === "view" ? b.id : (b.source_block_id ?? b.id));
   const allComments = (comments ?? []) as Comment[];
   const hasExportable = allComments.some((c) => c.attachments.some((a) => a.url) || /https?:\/\//.test(c.text));
-  const { counts: countsByKey, script: scriptComments } = groupComments(allComments, [...instructions, ...original]);
+  const { counts: countsByKey, project: projectComments } = groupComments(allComments, [...tasks, ...original]);
   const countsFor = (blocks: Block[]) => Object.fromEntries(blocks.map((b) => [b.id, countsByKey[keyOf(b)] ?? 0]));
-  const openBlock = openId && openId !== SCRIPT ? [...instructions, ...docBlocks].find((b) => b.id === openId) : undefined;
+  const openBlock = openId && openId !== PROJECT ? [...tasks, ...docBlocks].find((b) => b.id === openId) : undefined;
   const openKey = openBlock ? keyOf(openBlock) : null;
   const canComment = mode === "view" && !!actions;
-  const originalKeys = new Set([...instructions, ...original].map((b) => b.id));
+  const originalKeys = new Set([...tasks, ...original].map((b) => b.id));
+  // The share page only ever gets the club's name, never the club itself
+  const meta = {
+    title: shared.project.title,
+    targetDate: shared.project.targetDate,
+    type: shared.project.type,
+    stage: shared.project.stage,
+  };
+  const tasksLabel = shared.project.type === "digital" ? "Checklist" : "Punch";
 
   return (
     <BoardSourceProvider slug={slug}>
-      <ScriptLayout
+      <PageLayout
         left={
           <div className="inline-flex h-7 items-center gap-1.5 rounded-full border border-(--c-l-ebebeb) px-2.5 text-[13px] text-(--c-t-6b6b6b)">
             {mode === "editing" ? <IconPencil size={14} /> : <IconEye size={14} />}
@@ -246,7 +261,7 @@ export function SharedScript({ slug }: { slug: string }) {
                 onClick={async () => {
                   setExporting("Preparing…");
                   try {
-                    await exportAttachments(shared.video.title || "Script", [...instructions, ...original], allComments, (d, t) =>
+                    await exportAttachments(shared.project.title || "Project", [...tasks, ...original], allComments, (d, t) =>
                       setExporting(t ? `Downloading ${d} of ${t}…` : "Preparing…"),
                     );
                   } finally {
@@ -262,16 +277,16 @@ export function SharedScript({ slug }: { slug: string }) {
             )}
             <button
               type="button"
-              onClick={() => (openId === SCRIPT ? closeComments() : openComments(SCRIPT))}
-              aria-label="Comments on this script"
-              aria-pressed={openId === SCRIPT}
-              title="Comments on this script"
+              onClick={() => (openId === PROJECT ? closeComments() : openComments(PROJECT))}
+              aria-label="Comments on this project"
+              aria-pressed={openId === PROJECT}
+              title="Comments on this project"
               className={`inline-flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[14px] ${
-                openId === SCRIPT ? "bg-(--c-b-e7eefb) text-(--c-t-2358d8)" : "text-(--c-t-6b6b6b) hover:bg-(--c-b-f4f4f4)"
+                openId === PROJECT ? "bg-(--c-b-e7eefb) text-(--c-t-2358d8)" : "text-(--c-t-6b6b6b) hover:bg-(--c-b-f4f4f4)"
               }`}
             >
               <IconComments size={18} />
-              {scriptComments.length > 0 && <span className="text-[13px]">{scriptComments.length}</span>}
+              {projectComments.length > 0 && <span className="text-[13px]">{projectComments.length}</span>}
             </button>
             {mode === "editing" && (
               <>
@@ -302,7 +317,7 @@ export function SharedScript({ slug }: { slug: string }) {
                 </button>
               </>
             )}
-            {mode === "view" && shared.video.canEdit && (
+            {mode === "view" && shared.project.canEdit && (
               <button type="button" className={topButton} onClick={() => (creds ? void startEditing(creds) : setAskPass(true))}>
                 {mine ? "Your edits" : "Suggest edits"}
               </button>
@@ -314,20 +329,21 @@ export function SharedScript({ slug }: { slug: string }) {
             <div className="border-y border-(--c-l-f6d5d1) bg-(--c-b-fef6f5)">
               <div className="mx-auto max-w-[1440px] px-5 py-2.5 text-[14px] text-(--c-t-b42318) sm:px-10">
                 {mode === "editing"
-                  ? "You’re editing a copy. The owner gets it as an Edited version and chooses what to keep."
-                  : "Your edited version is saved. Your changes are shown in red."}
+                  ? "You’re editing a copy. The studio gets it as an Edited version and chooses what to keep."
+                  : "Your edited version is saved. Your changes are underlined; what you took out is struck through."}
               </div>
             </div>
           )
         }
-        focusMode={!!openId && openId !== SCRIPT}
+        focusMode={!!openId && openId !== PROJECT}
         panel={
-          openId === SCRIPT ? (
+          openId === PROJECT ? (
             <CommentsPanel
-              key={SCRIPT}
+              key={PROJECT}
               blockKey={null}
-              title="Comments on this script"
-              comments={scriptComments}
+              title="Comments on this project"
+              notice={COMMENTS_ARE_PUBLIC}
+              comments={projectComments}
               actions={actions}
               canWrite={!!actions}
               focusId={focusComment}
@@ -339,6 +355,7 @@ export function SharedScript({ slug }: { slug: string }) {
               key={openKey}
               blockKey={openKey}
               title="Comments"
+              notice={COMMENTS_ARE_PUBLIC}
               quote={snippet(openBlock.content)}
               comments={allComments.filter((c) => c.blockKey === openKey)}
               actions={actions}
@@ -350,32 +367,33 @@ export function SharedScript({ slug }: { slug: string }) {
           ) : undefined
         }
       >
-        <VideoTitle meta={shared.video} readOnly />
-        <ScriptTabs
+        <ProjectTitle title={shared.project.title} readOnly />
+        <Tabs
+          storageKey="shared"
           tabs={[
-            ...(hasInstructions && mode !== "mine"
+            { id: "details", label: "Details", content: <ProjectDetails meta={meta} readOnly clubName={shared.project.clubName} /> },
+            ...(hasTasks && mode !== "mine"
               ? [
                   {
-                    id: "instructions",
-                    label: "Editor instructions",
-                    shortLabel: "Editor",
-                    badge: instructionsProgress(instructions),
+                    id: "tasks",
+                    label: tasksLabel,
+                    badge: taskProgress(tasks),
                     content: (
-                      <Instructions
-                        blocks={instructions}
+                      <TaskList
+                        blocks={tasks}
                         setBlocks={noop}
                         readOnly
                         activeId={openId}
-                        commentCounts={countsFor(instructions)}
+                        commentCounts={countsFor(tasks)}
                         onOpenComments={openComments}
+                        label={tasksLabel}
+                        addLabel={tasksLabel}
                       />
                     ),
                   },
                 ]
               : []),
-            { id: "details", label: "Details", content: <VideoDetails meta={shared.video} readOnly /> },
-            ...(shared.video.captions?.length ? [{ id: "captions", label: "Captions", content: <Captions captions={shared.video.captions} readOnly /> }] : []),
-          ] satisfies ScriptTab[]}
+          ] satisfies Tab[]}
         />
         <div className="mt-2">
           {mode === "editing" && mine ? (
@@ -408,7 +426,7 @@ export function SharedScript({ slug }: { slug: string }) {
             />
           )}
         </div>
-      </ScriptLayout>
+      </PageLayout>
       {askPass && <PasscodeDialog onCancel={() => setAskPass(false)} onSubmit={startEditing} />}
       <Lightbox url={lightbox} onClose={() => setLightbox(null)} />
     </BoardSourceProvider>
@@ -437,7 +455,7 @@ function PasscodeDialog({ onCancel, onSubmit }: { onCancel: () => void; onSubmit
       >
         <div className="flex flex-col gap-1.5">
           <h2 className="m-0 text-[18px] font-semibold text-(--c-t-1b1b1b)">Suggest edits</h2>
-          <p className="m-0 text-[14px] leading-[1.5] text-(--c-t-6b6b6b)">Your changes are saved as a separate copy for the owner to review.</p>
+          <p className="m-0 text-[14px] leading-[1.5] text-(--c-t-6b6b6b)">Your changes are saved as a separate copy for the studio to review.</p>
         </div>
         <div className="flex flex-col gap-1.5">
           <label htmlFor="guest-name" className="text-[13px] font-medium text-(--c-t-1b1b1b)">

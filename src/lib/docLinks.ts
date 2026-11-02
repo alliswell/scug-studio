@@ -1,4 +1,4 @@
-// Links and bold inside script lines. Text stays plain: a link is written [text](https://…) or as a bare
+// Links and bold inside document lines. Text stays plain: a link is written [text](https://…) or as a bare
 // URL, and bold is **text**.
 // When a line isn't being edited it's drawn with real links (the [text](url) shows as just "text");
 // while you type in it you see the plain text, so editing works exactly like any other line.
@@ -28,14 +28,14 @@ export function linkSegments(value: string): Seg[] | null {
   return segs;
 }
 
-/** A script mention ([@Title](…/v/<id>)): the script's id, or null */
+/** A project mention ([@Title](…/p/<id>)): the project's id, or null */
 export function mentionOf(s: Pick<Seg, "text" | "href">) {
   if (!s.href || !s.text.startsWith("@")) return null;
-  return s.href.match(/\/v\/([a-z0-9]{20,40})\/?$/i)?.[1] ?? null;
+  return s.href.match(/\/p\/([a-z0-9]{20,40})\/?$/i)?.[1] ?? null;
 }
 
-/** Mentions a script inside a line: what's stored */
-export const mentionText = (title: string, id: string, origin: string) => `[@${(title.trim() || "Untitled").replace(/[[\]\n]/g, "")}](${origin}/v/${id})`;
+/** Mentions a project inside a line: what's stored */
+export const mentionText = (title: string, id: string, origin: string) => `[@${(title.trim() || "Untitled").replace(/[[\]\n]/g, "")}](${origin}/p/${id})`;
 
 /** Draws the line with real links. */
 export function renderLinks(el: HTMLElement, segs: Seg[]) {
@@ -43,12 +43,12 @@ export function renderLinks(el: HTMLElement, segs: Seg[]) {
   for (const s of segs) {
     const mention = mentionOf(s);
     if (mention) {
-      // A mentioned script: a pill that opens it (in this tab)
+      // A mentioned project: a pill that opens it (in this tab)
       const a = document.createElement("a");
-      a.href = `/v/${mention}`;
-      a.dataset.scriptLink = "";
+      a.href = `/p/${mention}`;
+      a.dataset.docLink = "";
       a.dataset.internal = "";
-      a.className = "script-pill";
+      a.className = "doc-pill";
       a.textContent = s.text.slice(1);
       a.title = `Open ${s.text.slice(1)}`;
       el.appendChild(a);
@@ -57,14 +57,14 @@ export function renderLinks(el: HTMLElement, segs: Seg[]) {
       a.href = s.href;
       a.target = "_blank";
       a.rel = "noopener noreferrer";
-      a.dataset.scriptLink = "";
-      a.className = "script-link";
+      a.dataset.docLink = "";
+      a.className = "doc-link";
       a.textContent = s.text;
       a.title = s.href;
       el.appendChild(a);
     } else if (s.bold) {
       const b = document.createElement("strong");
-      b.className = "script-bold";
+      b.className = "doc-bold";
       b.textContent = s.text;
       el.appendChild(b);
     } else el.appendChild(document.createTextNode(s.text));

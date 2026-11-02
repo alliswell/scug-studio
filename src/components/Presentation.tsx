@@ -2,16 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { colorBg, textHex, type Attachment, type Block, type Comment } from "@/lib/types";
-import { linkSegments } from "@/lib/scriptLinks";
+import { linkSegments } from "@/lib/docLinks";
 import { listNumbers } from "@/lib/util";
 import { LinkCard, linkCardsIn } from "./LinkCard";
 import { MediaViewer } from "./Attachments";
 import { BoardCard, BoardOverlay } from "./BoardBlock";
 
 /**
- * Presentation mode: the script full screen, big and calm, for showing an outline while filming.
+ * Presentation mode: the document full screen, big and calm, for walking a room through it.
  * Click a line (or step with ↑/↓): it lights up yellow and its comments slide open right underneath,
- * with tweets, videos and images. Read-only: nothing here changes the script.
+ * with links, videos and images. Read-only: nothing here changes the document.
  */
 export function Presentation({ title, blocks, comments, onClose }: { title: string; blocks: Block[]; comments: Comment[]; onClose: () => void }) {
   const byKey = new Map<string, Comment[]>();
@@ -225,7 +225,7 @@ function rich(text: string): ReactNode {
   );
 }
 
-/** A line's comments, shown right under it: notes, then tweets, videos and images. */
+/** A line's comments, shown right under it: notes, then links, videos and images. */
 function Notes({ comments, open }: { comments: Comment[]; open: boolean }) {
   const media: Attachment[] = comments.flatMap((c) => c.attachments.filter((a) => a.url && a.kind !== "link"));
   return (

@@ -2,18 +2,21 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { statusOf, type VideoFormat } from "@/lib/types";
-import { FormatIcon } from "./FormatIcon";
+import { stageOf, type ProjectType } from "@/lib/types";
+import { TypeIcon } from "./TypeIcon";
 import { IconChevron } from "./icons";
 
-export type CalendarVideo = { _id: string; title: string; liveDate: string | null; status: string; format: VideoFormat };
+export type CalendarProject = { _id: string; title: string; targetDate: string | null; stage: string; type: ProjectType };
+
+/** One mime across the app, so a card can be dragged from the board onto a day and back. */
+export const PROJECT_MIME = "text/x-project";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-/** Month grid of scripts by live date. Drag a script onto another day (or from "No live date") to change its date. */
-export function CalendarView({ videos, onMove }: { videos: CalendarVideo[]; onMove: (id: string, liveDate: string) => void }) {
+/** Month grid of projects by target date. Drag a project onto another day (or from "No target date") to change it. */
+export function CalendarView({ projects, onMove }: { projects: CalendarProject[]; onMove: (id: string, targetDate: string) => void }) {
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -30,20 +33,20 @@ export function CalendarView({ videos, onMove }: { videos: CalendarVideo[]; onMo
     return d;
   });
   const today = ymd(new Date());
-  const byDay = new Map<string, CalendarVideo[]>();
-  for (const v of videos) if (v.liveDate) byDay.set(v.liveDate, [...(byDay.get(v.liveDate) ?? []), v]);
-  const undated = videos.filter((v) => !v.liveDate);
+  const byDay = new Map<string, CalendarProject[]>();
+  for (const p of projects) if (p.targetDate) byDay.set(p.targetDate, [...(byDay.get(p.targetDate) ?? []), p]);
+  const undated = projects.filter((p) => !p.targetDate);
   const shift = (n: number) => setMonth(new Date(month.getFullYear(), month.getMonth() + n, 1));
 
   const dropProps = (day: string) => ({
     onDragOver: (e: React.DragEvent) => {
-      if (!e.dataTransfer.types.includes("text/x-video")) return;
+      if (!e.dataTransfer.types.includes(PROJECT_MIME)) return;
       e.preventDefault();
       if (dropDay !== day) setDropDay(day);
     },
     onDragLeave: () => setDropDay((d) => (d === day ? null : d)),
     onDrop: (e: React.DragEvent) => {
-      const id = e.dataTransfer.getData("text/x-video");
+      const id = e.dataTransfer.getData(PROJECT_MIME);
       setDropDay(null);
       if (id) {
         e.preventDefault();
@@ -97,15 +100,20 @@ export function CalendarView({ videos, onMove }: { videos: CalendarVideo[]; onMo
               >
                 {d.getDate()}
               </div>
-              {/* Phones: dots in the grid, titles in the list below. Wider screens: titles in the grid. */}
+              {/* Phones: the stage glyphs in the grid, titles in the list below. Wider screens: titles in the grid. */}
               <div className="flex flex-wrap gap-1 sm:hidden">
-                {list.map((v) => (
-                  <span key={v._id} className="h-[7px] w-[7px] rounded-full" style={{ background: statusOf(v.status).dot }} aria-hidden="true" />
-                ))}
+                {list.map((p) => {
+                  const st = stageOf(p.stage, p.type);
+                  return (
+                    <span key={p._id} className="text-[11px] leading-none" style={{ color: st.hex }} title={st.label} aria-label={st.label}>
+                      {st.glyph}
+                    </span>
+                  );
+                })}
               </div>
               <div className="hidden flex-col gap-1 sm:flex">
-                {list.map((v) => (
-                  <Chip key={v._id} v={v} />
+                {list.map((p) => (
+                  <Chip key={p._id} p={p} />
                 ))}
               </div>
             </div>
@@ -113,7 +121,7 @@ export function CalendarView({ videos, onMove }: { videos: CalendarVideo[]; onMo
         })}
       </div>
 
-      {/* Phones: this month's scripts as a list, since the grid is too narrow for titles */}
+      {/* Phones: this month's projects as a list, since the grid is too narrow for titles */}
       <div className="mt-5 sm:hidden">
         {days
           .filter((d) => d.getMonth() === month.getMonth() && byDay.has(ymd(d)))
@@ -124,8 +132,8 @@ export function CalendarView({ videos, onMove }: { videos: CalendarVideo[]; onMo
                 <div className="text-[16px] font-medium text-(--c-t-1b1b1b)">{d.getDate()}</div>
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
-                {byDay.get(ymd(d))!.map((v) => (
-                  <Chip key={v._id} v={v} wide />
+                {byDay.get(ymd(d))!.map((p) => (
+                  <Chip key={p._id} p={p} wide />
                 ))}
               </div>
             </div>
@@ -134,43 +142,45 @@ export function CalendarView({ videos, onMove }: { videos: CalendarVideo[]; onMo
 
       <div className="mt-6" {...dropProps("")}>
         <h3 className="m-0 mb-2 text-[13px] font-medium text-(--c-t-737373)">
-          No live date <span className="font-normal text-(--c-t-9a9a9a)">{undated.length}</span>
+          No target date <span className="font-normal text-(--c-t-9a9a9a)">{undated.length}</span>
         </h3>
         {undated.length === 0 ? (
-          <p className="m-0 text-[13px] text-(--c-t-9a9a9a)">Every script here has a live date.</p>
+          <p className="m-0 text-[13px] text-(--c-t-9a9a9a)">Every project here has a target date.</p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
-            {undated.map((v) => (
-              <Chip key={v._id} v={v} wide />
+            {undated.map((p) => (
+              <Chip key={p._id} p={p} wide />
             ))}
           </div>
         )}
-        <p className="m-0 mt-3 text-[12px] text-(--c-t-9a9a9a)">Drag a script onto a day to set its live date.</p>
+        <p className="m-0 mt-3 text-[12px] text-(--c-t-9a9a9a)">Drag a project onto a day to set its target date.</p>
       </div>
     </div>
   );
 }
 
-function Chip({ v, wide }: { v: CalendarVideo; wide?: boolean }) {
-  const st = statusOf(v.status);
+function Chip({ p, wide }: { p: CalendarProject; wide?: boolean }) {
+  const st = stageOf(p.stage, p.type);
   return (
     <Link
-      href={`/v/${v._id}`}
+      href={`/p/${p._id}`}
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.setData("text/x-video", v._id);
+        e.dataTransfer.setData(PROJECT_MIME, p._id);
         e.dataTransfer.effectAllowed = "move";
       }}
-      title={v.title || "Untitled"}
+      title={`${p.title || "Untitled"} · ${st.label}`}
       className={`flex min-w-0 items-start gap-1.5 rounded-md border border-(--c-l-ebebeb) bg-(--c-b-ffffff) px-1.5 py-1 text-[12px] leading-[1.3] text-(--c-t-1b1b1b) no-underline hover:border-(--c-l-d4d4d4) hover:bg-(--c-b-fafafa) ${
         wide ? "max-w-[280px]" : ""
       }`}
     >
-      <span className="mt-[5px] h-[6px] w-[6px] shrink-0 rounded-full" style={{ background: st.dot }} aria-hidden="true" />
-      <span className="mt-[2px] hidden shrink-0 sm:inline-flex">
-        <FormatIcon format={v.format} size={11} />
+      <span className="mt-[1px] shrink-0 text-[11px] leading-[1.3]" style={{ color: st.hex }} aria-label={st.label}>
+        {st.glyph}
       </span>
-      <span className={wide ? "truncate" : "line-clamp-2 break-words"}>{v.title || "Untitled"}</span>
+      <span className="mt-[2px] hidden shrink-0 text-(--c-t-8a8a8a) sm:inline-flex">
+        <TypeIcon type={p.type} size={11} />
+      </span>
+      <span className={wide ? "truncate" : "line-clamp-2 break-words"}>{p.title || "Untitled"}</span>
     </Link>
   );
 }

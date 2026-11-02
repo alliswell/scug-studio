@@ -3,7 +3,7 @@
 import { useMutation, useQuery } from "convex/react";
 import { useDocumentTitle } from "@/lib/useDocumentTitle";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -15,17 +15,18 @@ import {
 import { readText, setCaret } from "@/lib/caret";
 import { useDocSync, useLoadBlocks, type SaveState } from "@/lib/sync";
 import {
-  FORMATS,
-  SPONSORSHIPS,
-  STATUSES,
+  reviewStatusOf,
+  stageOf,
+  typeLabel,
   type Attachment,
   type Block,
   type Comment,
+  type ProjectType,
 } from "@/lib/types";
 import {
   emptyBlock,
   kindForFile,
-  scriptToText,
+  docToText,
   timeAgo,
   uid,
 } from "@/lib/util";
@@ -35,19 +36,19 @@ import { CommentsPanel } from "./CommentsPanel";
 import { DocEditor } from "./DocEditor";
 import { DiffBlocks, computeDiff } from "./DiffView";
 import { Brief } from "./Brief";
-import { Captions } from "./Captions";
-import { Instructions, instructionsProgress } from "./Instructions";
+import { TaskList, taskProgress } from "./Instructions";
 import { Updates } from "./Updates";
-import { ScriptLayout, primaryButton } from "./ScriptLayout";
+import { PageLayout, primaryButton } from "./PageLayout";
 import { SharePopover } from "./SharePopover";
-import { ScriptTabs } from "./ScriptTabs";
-import { VideoDetails, VideoTitle, type Meta } from "./VideoMeta";
+import { Tabs, type Tab } from "./Tabs";
+import { ProjectDetails, ProjectTitle, type Meta } from "./ProjectMeta";
 import {
   IconArrowLeft,
   IconCheck,
   IconCopy,
   IconHistory,
   IconPin,
+  IconPlus,
 } from "./icons";
 import {
   ShowSidebarButton,
@@ -65,9 +66,18 @@ type DocInfo = {
   updatedAt: number;
 };
 
-const SCRIPT = "__script__";
+const PROJECT = "__project__";
 /** For event handlers (the lint rule can't tell them from render code) */
 const clockNow = () => Date.now();
+
+/**
+ * The two pipelines call the same two tabs by different names: a build-out has a plan and a punch
+ * list, digital work has a design and a checklist. Nothing else about them differs.
+ */
+const TAB_WORDS: Record<ProjectType, { doc: string; tasks: string; addTask: string }> = {
+  physical: { doc: "Plan", tasks: "Punch", addTask: "Add a punch item" },
+  digital: { doc: "Design", tasks: "Checklist", addTask: "Add a checklist item" },
+};
 
 // A few uploads at once; the rest wait their turn.
 const queue: (() => Promise<void>)[] = [];
@@ -87,29 +97,29 @@ function enqueue(job: () => Promise<void>) {
   pump();
 }
 
-export function VideoEditor({ id }: { id: string }) {
-  const data = useQuery(api.videos.get, { id });
-  /** A Journal entry: the same editor, without the script parts */
-  const journal = data?.video.kind === "journal";
+export function ProjectPage({ id }: { id: string }) {
+  const data = useQuery(api.projects.get, { id });
+  /** A Journal entry: the same editor, without the project parts */
+  const journal = data?.project.kind === "journal";
   /** The team's Todo list: one bulleted list, nothing else */
-  const todo = data?.video.kind === "todo";
+  const todo = data?.project.kind === "todo";
   const todoRef = useRef(false);
   useEffect(() => {
     todoRef.current = todo;
   }, [todo]);
   const team = useQuery(api.users.list, todo ? {} : "skip");
-  const scripts = useQuery(api.videos.list, todo ? {} : "skip");
+  const projects = useQuery(api.projects.list, todo ? {} : "skip");
   const comments = useQuery(
     api.comments.list,
-    data?.video ? { videoId: data.video._id } : "skip",
+    data?.project ? { projectId: data.project._id } : "skip",
   );
   /** The comment being added shows straight away, before the server has saved it */
   const pendingKey = useRef<string | null>(null);
   const pendingAt = useRef(0);
   const addCommentM = useMutation(api.comments.add).withOptimisticUpdate((store, args) => {
-    const list = store.getQuery(api.comments.list, { videoId: args.videoId });
+    const list = store.getQuery(api.comments.list, { projectId: args.projectId });
     if (!list || !pendingKey.current) return;
-    store.setQuery(api.comments.list, { videoId: args.videoId }, [
+    store.setQuery(api.comments.list, { projectId: args.projectId }, [
       ...list,
       { id: pendingKey.current as Id<"comments">, blockKey: args.blockKey, keyHistory: [], quote: null, text: "", authorName: null, agent: false, mine: true, attachments: [], createdAt: pendingAt.current },
     ]);
@@ -124,19 +134,19 @@ export function VideoEditor({ id }: { id: string }) {
   const attachM = useMutation(api.comments.attach);
   const detachM = useMutation(api.comments.detach);
   const loadBlocks = useLoadBlocks();
-  const updateVideo = useMutation(api.videos.update);
+  const updateProject = useMutation(api.projects.update);
   const generateUploadUrl = useMutation(api.docs.generateUploadUrl);
   const fileUrl = useMutation(api.docs.fileUrl);
   const promote = useMutation(api.docs.promote);
   const removeDoc = useMutation(api.docs.remove);
 
   const [meta, setMeta] = useState<Meta | null>(null);
-  useDocumentTitle(meta ? meta.title || "Untitled script" : null);
+  useDocumentTitle(meta ? meta.title || "Untitled project" : null);
   const [mainId, setMainId] = useState<string | null>(null);
-  const [insId, setInsId] = useState<string | null>(null);
+  const [tasksId, setTasksId] = useState<string | null>(null);
   const [mainBlocks, setMainBlocks] = useState<Block[] | null>(null);
-  const [insBlocks, setInsBlocks] = useState<Block[] | null>(null);
-  const [review, setReview] = useState<{
+  const [taskBlocks, setTaskBlocks] = useState<Block[] | null>(null);
+  const [version, setVersion] = useState<{
     doc: DocInfo;
     blocks: Block[];
   } | null>(null);
@@ -160,24 +170,24 @@ export function VideoEditor({ id }: { id: string }) {
     );
   };
 
-  const setPinnedM = useMutation(api.videos.setPinned);
+  const setPinnedM = useMutation(api.projects.setPinned);
   const backTo = journal ? "/?view=journal" : todo ? "/?view=home" : "/";
   const goBack = useGoBack(backTo);
   const mobile = useIsMobile();
   const side = useAppSidebar();
-  const partnerOptions = useQuery(api.partners.list)?.map((p) => ({
-    id: p.id as string,
-    name: p.name,
-    logoUrl: p.logoUrl,
+  const clubOptions = useQuery(api.clubs.list, journal || todo ? "skip" : {})?.map((c) => ({
+    id: c._id as string,
+    name: c.name,
+    status: c.status as string,
   }));
-  /** Comments open in the side panel: a line's key, SCRIPT for the whole script, or none */
+  /** Comments open in the side panel: a line's key, PROJECT for the whole project, or none */
   const [openId, setOpenId] = useState<string | null>(null);
   const [focusComment, setFocusComment] = useState<string | null>(null);
   const [uploading, setUploading] = useState<Record<string, Attachment[]>>({});
   const createdHere = useRef(new Set<string>());
   const [lightbox, setLightbox] = useState<string | null>(null);
   const mainSync = useDocSync(mainId, mainBlocks);
-  const insSync = useDocSync(insId, insBlocks);
+  const tasksSync = useDocSync(tasksId, taskBlocks);
   const metaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMeta = useRef<Partial<Meta>>({});
   const [metaState, setMetaState] = useState<SaveState>("idle");
@@ -186,31 +196,29 @@ export function VideoEditor({ id }: { id: string }) {
     (fn) => setMainBlocks((p) => (p ? fn(p) : p)),
     [],
   );
-  const setIns: SetList = useCallback(
-    (fn) => setInsBlocks((p) => (p ? fn(p) : p)),
+  const setTasks: SetList = useCallback(
+    (fn) => setTaskBlocks((p) => (p ? fn(p) : p)),
     [],
   );
 
   const docs = (data?.documents ?? []) as DocInfo[];
   const serverMain = docs.find((d) => d.kind === "main")?._id ?? null;
-  const serverIns = docs.find((d) => d.kind === "instructions")?._id ?? null;
+  const serverTasks = docs.find((d) => d.kind === "tasks")?._id ?? null;
 
   useEffect(() => {
-    if (data?.video && !meta)
+    if (data?.project && !meta)
       setMeta({
-        title: data.video.title,
-        liveDate: data.video.liveDate,
-        format: data.video.format,
-        status: data.video.status,
-        sponsored: data.video.sponsored ?? "none",
-        captions: data.video.captions,
-        brief: data.video.brief,
-        briefLinks: data.video.briefLinks,
-        partnerId: data.video.partnerId ?? null,
+        title: data.project.title,
+        targetDate: data.project.targetDate,
+        type: data.project.type,
+        stage: data.project.stage,
+        clubId: data.project.clubId ?? null,
+        brief: data.project.brief,
+        briefLinks: data.project.briefLinks,
       });
-  }, [data?.video, meta]);
+  }, [data?.project, meta]);
 
-  // Load blocks when we first see the documents, and again if the main script is replaced
+  // Load blocks when we first see the documents, and again if the main document is replaced
   useEffect(() => {
     if (!serverMain || serverMain === mainId) return;
     void loadBlocks(serverMain).then((b) => {
@@ -219,20 +227,20 @@ export function VideoEditor({ id }: { id: string }) {
       const list = b.length ? b : [emptyBlock()];
       setMainBlocks(todoRef.current ? list.map((x) => (x.type === "bullet" || x.type === "number" || x.type === "p" ? { ...x, type: "todo" as const } : x)) : list);
       setMainId(serverMain);
-      setReview(null);
+      setVersion(null);
       setOpenId(null);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverMain]);
   useEffect(() => {
-    if (!serverIns || serverIns === insId) return;
-    void loadBlocks(serverIns).then((b) => {
-      insSync.seed(serverIns, b);
-      setInsBlocks(b.length ? b : [{ ...emptyBlock(), type: "todo" }]);
-      setInsId(serverIns);
+    if (!serverTasks || serverTasks === tasksId) return;
+    void loadBlocks(serverTasks).then((b) => {
+      tasksSync.seed(serverTasks, b);
+      setTaskBlocks(b.length ? b : [{ ...emptyBlock(), type: "todo" }]);
+      setTasksId(serverTasks);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverIns]);
+  }, [serverTasks]);
 
   useEffect(() => {
     const busy = Object.values(uploading).some((list) =>
@@ -253,10 +261,10 @@ export function VideoEditor({ id }: { id: string }) {
       pendingMeta.current = {};
       setMetaState("saving");
       try {
-        await updateVideo({
-          id: id as Id<"videos">,
+        await updateProject({
+          id: id as Id<"projects">,
           ...p,
-          partnerId: p.partnerId as Id<"partners"> | null | undefined,
+          clubId: p.clubId as Id<"clubs"> | null | undefined,
         });
         setMetaState("saved");
       } catch {
@@ -287,7 +295,7 @@ export function VideoEditor({ id }: { id: string }) {
       pendingAt.current = clockNow();
       setFocusComment(temp);
       const cid = await addCommentM({
-        videoId: id as Id<"videos">,
+        projectId: id as Id<"projects">,
         blockKey,
         text: "",
       });
@@ -379,7 +387,7 @@ export function VideoEditor({ id }: { id: string }) {
     },
   };
 
-  /** Dropping files on a line starts a new comment there holding the files, ready for instructions. */
+  /** Dropping files on a line starts a new comment there holding the files, ready for a note about them. */
   const dropFiles = async (blockKey: string, files: File[]) => {
     setOpenId(blockKey);
     snapToLine(blockKey);
@@ -402,7 +410,7 @@ export function VideoEditor({ id }: { id: string }) {
       for (const c of commentsRef.current) {
         if (
           !candidates.has(c.id) ||
-          (c.blockKey ?? SCRIPT) === openRef.current ||
+          (c.blockKey ?? PROJECT) === openRef.current ||
           !createdHere.current.has(c.id) ||
           c.text.trim() ||
           c.attachments.length ||
@@ -419,8 +427,8 @@ export function VideoEditor({ id }: { id: string }) {
     if (openId && openId !== key) sweepEmpty();
     setOpenId(key);
     setFocusComment(null);
-    if (key !== SCRIPT) snapToLine(key);
-    if (opts?.newComment) void actions.add(key === SCRIPT ? null : key);
+    if (key !== PROJECT) snapToLine(key);
+    if (opts?.newComment) void actions.add(key === PROJECT ? null : key);
   };
 
   const closeComments = () => {
@@ -442,7 +450,7 @@ export function VideoEditor({ id }: { id: string }) {
       const cid = placing;
       setPlacing(null);
       void (async () => {
-        await Promise.all([mainSync.flush(), insSync.flush()]);
+        await Promise.all([mainSync.flush(), tasksSync.flush()]);
         await moveCommentM({ id: cid as Id<"comments">, blockKey: key });
         setOpenId(key);
         snapToLine(key);
@@ -456,9 +464,9 @@ export function VideoEditor({ id }: { id: string }) {
       window.removeEventListener("mousedown", pick, true);
       window.removeEventListener("keydown", esc);
     };
-  }, [placing, mainSync, insSync, moveCommentM]);
+  }, [placing, mainSync, tasksSync, moveCommentM]);
 
-  /** Puts the caret at the end of a line in the script or instructions */
+  /** Puts the caret at the end of a line in the document or the task list */
   const focusLineEnd = (key: string) => {
     requestAnimationFrame(() => {
       const el = document.querySelector<HTMLElement>(
@@ -488,44 +496,45 @@ export function VideoEditor({ id }: { id: string }) {
       };
     };
     const inMain = mainBlocks?.some((b) => b.id === key);
-    const target = inMain ? mainBlocks : insBlocks;
+    const target = inMain ? mainBlocks : taskBlocks;
     const res = target ? add(target) : null;
     if (!res) return;
     if (inMain) setMain(() => res.next);
-    else setIns(() => res.next);
+    else setTasks(() => res.next);
     closeComments();
     // Wait for the new line to render, then type in it
     setTimeout(() => focusLineEnd(res.id), 30);
   };
 
-  const openReview = async (doc: DocInfo) => {
+  const openVersion = async (doc: DocInfo) => {
     setVersionsOpen(false);
     setOpenId(null);
     await mainSync.flush();
     const blocks = await loadBlocks(doc._id);
-    setReview({ doc, blocks });
+    setVersion({ doc, blocks });
     window.scrollTo({ top: 0 });
   };
 
   if (data === null)
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 text-[14px] text-(--c-t-737373)">
-        This script doesn&apos;t exist anymore.
+        This project doesn&apos;t exist anymore.
         <Link href="/" className="font-medium text-(--c-t-2358d8)">
-          Back to scripts
+          Back to projects
         </Link>
       </div>
     );
-  if (!data || !meta || !mainBlocks || !insBlocks)
+  if (!data || !meta || !mainBlocks || !taskBlocks)
     return <div className="min-h-screen bg-(--c-b-ffffff)" />;
 
+  const words = TAB_WORDS[meta.type] ?? TAB_WORDS.physical;
   const edited = docs
     .filter((d) => d.kind === "edited")
     .sort((a, b) => b.updatedAt - a.updatedAt);
   const archived = docs
     .filter((d) => d.kind === "archived")
     .sort((a, b) => b.updatedAt - a.updatedAt);
-  const states = [mainSync.state, insSync.state, metaState];
+  const states = [mainSync.state, tasksSync.state, metaState];
   const saveLabel = states.includes("error")
     ? "Offline, retrying…"
     : states.includes("saving")
@@ -533,22 +542,22 @@ export function VideoEditor({ id }: { id: string }) {
       : "";
 
   // Comments live on lines by key; an edited version's lines point back to the originals
-  const keyOf = (b: Block) => (review ? (b.source_block_id ?? b.id) : b.id);
+  const keyOf = (b: Block) => (version ? (b.source_block_id ?? b.id) : b.id);
   const allComments: Comment[] = ((comments ?? []) as Comment[]).map((c) => {
     const withKey = aliases.current.has(c.id) ? { ...c, clientKey: aliases.current.get(c.id) } : c.id.startsWith("pending-") ? { ...c, clientKey: c.id } : c;
     return uploading[c.id]
       ? { ...withKey, attachments: [...c.attachments, ...uploading[c.id]] }
       : withKey;
   });
-  const { counts: countsByKey, script: scriptComments } = groupComments(
+  const { counts: countsByKey, project: projectComments } = groupComments(
     allComments,
-    [...insBlocks, ...mainBlocks],
+    [...taskBlocks, ...mainBlocks],
   );
   // An earlier version shows each comment where it was then: its current line if that line is in the version,
   // otherwise the most recent line it used to be on
   const archivedKeys =
-    review?.doc.kind === "archived"
-      ? new Set(review.blocks.map((b) => b.id))
+    version?.doc.kind === "archived"
+      ? new Set(version.blocks.map((b) => b.id))
       : null;
   const placeOf = (c: Comment) => {
     if (!archivedKeys || !c.blockKey || archivedKeys.has(c.blockKey))
@@ -571,22 +580,22 @@ export function VideoEditor({ id }: { id: string }) {
         (archivedKeys ? archivedCounts : countsByKey)[keyOf(b)] ?? 0,
       ]),
     );
-  const shownBlocks = review ? review.blocks : [...insBlocks, ...mainBlocks];
+  const shownBlocks = version ? version.blocks : [...taskBlocks, ...mainBlocks];
   const openBlock =
-    openId && openId !== SCRIPT
+    openId && openId !== PROJECT
       ? shownBlocks.find((b) => b.id === openId)
       : undefined;
   const openKey = openBlock ? keyOf(openBlock) : null;
 
   // The side panel only shows while comments are open
   const panel =
-    openId === SCRIPT ? (
+    openId === PROJECT ? (
       <CommentsPanel
-        key={SCRIPT}
+        key={PROJECT}
         blockKey={null}
-        title="Comments on this script"
-        comments={scriptComments}
-        onPlace={review ? undefined : (cid) => setPlacing(cid)}
+        title="Comments on this project"
+        comments={projectComments}
+        onPlace={version ? undefined : (cid) => setPlacing(cid)}
         actions={actions}
         canWrite
         canDeleteOthers
@@ -601,21 +610,118 @@ export function VideoEditor({ id }: { id: string }) {
         blockKey={openKey}
         title="Comments"
         quote={snippet(openBlock.content)}
-        onNextLine={review ? undefined : () => continueBelow(openBlock.id)}
-        onBackToLine={review ? undefined : () => focusLineEnd(openBlock.id)}
+        onNextLine={version ? undefined : () => continueBelow(openBlock.id)}
+        onBackToLine={version ? undefined : () => focusLineEnd(openBlock.id)}
         comments={allComments.filter((c) => placeOf(c) === openKey)}
         actions={actions}
         canWrite
         canDeleteOthers
         focusId={focusComment}
-        onClose={() => openComments(SCRIPT)}
+        onClose={() => openComments(PROJECT)}
         onOpenImage={setLightbox}
       />
     ) : undefined;
 
+  // The main document: the edited copy's diff while a version is open, otherwise the live editor
+  const mainDoc: ReactNode = version ? (
+    <div className="mt-2">
+      {version.doc.kind === "edited" ? (
+        <DiffBlocks
+          original={mainBlocks}
+          edited={version.blocks}
+          activeId={openId}
+          commentCounts={countsFor(version.blocks)}
+          onOpenComments={(b) => openComments(b)}
+        />
+      ) : (
+        <DocEditor
+          blocks={version.blocks}
+          setBlocks={() => {}}
+          readOnly
+          activeId={openId}
+          commentCounts={countsFor(version.blocks)}
+          onOpenComments={(b) => openComments(b)}
+        />
+      )}
+    </div>
+  ) : (
+    <div data-doc className="mt-2">
+      <DocEditor
+        blocks={mainBlocks}
+        setBlocks={setMain}
+        docTitle={meta.title}
+        canUpload
+        canComment
+        onFiles={(b, files) => void dropFiles(b, files)}
+        activeId={openId}
+        commentCounts={countsFor(mainBlocks)}
+        onOpenComments={openComments}
+        listOnly={todo}
+        people={todo ? (team ?? []) : undefined}
+        mentions={todo ? (projects ?? []).map((p) => ({ id: p._id, title: p.title, type: p.type })) : undefined}
+        placeholder={todo ? "Add a to-do…" : undefined}
+      />
+    </div>
+  );
+
+  // The tabs are data: the same five every time, named for the pipeline the project is running.
+  const tabs: Tab[] = [
+    {
+      id: "brief",
+      label: "Brief",
+      content: (
+        <div className="flex flex-col gap-5 pt-1">
+          <ProjectDetails
+            meta={meta}
+            onChange={changeMeta}
+            readOnly={!!version}
+            clubs={clubOptions}
+            share={
+              <SharePopover
+                projectId={id}
+                shareSlug={data.project.shareSlug}
+                passcode={data.project.editPasscode}
+                getText={() => docToText(meta.title, mainBlocks)}
+              />
+            }
+          />
+          <Brief
+            value={meta.brief ?? ""}
+            onChange={(brief) => changeMeta({ brief })}
+            links={meta.briefLinks ?? []}
+            onLinksChange={(briefLinks) => changeMeta({ briefLinks })}
+            readOnly={!!version}
+          />
+        </div>
+      ),
+    },
+    { id: "doc", label: words.doc, content: mainDoc },
+    { id: "visuals", label: "Visuals", content: <ProjectReviews projectId={id} /> },
+    {
+      id: "tasks",
+      label: words.tasks,
+      badge: taskProgress(taskBlocks),
+      content: (
+        <TaskList
+          blocks={taskBlocks}
+          setBlocks={setTasks}
+          readOnly={!!version}
+          canUpload
+          onFiles={(b, files) => void dropFiles(b, files)}
+          activeId={openId}
+          commentCounts={countsFor(taskBlocks)}
+          onOpenComments={openComments}
+          label={words.tasks}
+          addLabel={words.addTask}
+        />
+      ),
+    },
+    { id: "log", label: "Log", content: <Updates projectId={id} readOnly={!!version} /> },
+  ];
+
   return (
     <>
-      <ScriptLayout
+      <PageLayout
         navOpen={side.shown}
         left={
           <>
@@ -627,13 +733,13 @@ export function VideoEditor({ id }: { id: string }) {
             )}
             <Link
               href={backTo}
-              // Back to wherever you came from (the Scripts page in the view you left it, Home, a board…)
+              // Back to wherever you came from (the Projects page in the view you left it, Home, a board…)
               onClick={goBack}
               className="inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-[14px] text-(--c-t-6b6b6b) no-underline hover:bg-(--c-b-f4f4f4)"
             >
               <IconArrowLeft />
               {/* Phones: just the arrow, so the top bar fits next to the sidebar button */}
-              <span className="max-sm:hidden">{journal ? "Journal" : todo ? "Home" : "Scripts"}</span>
+              <span className="max-sm:hidden">{journal ? "Journal" : todo ? "Home" : "Projects"}</span>
             </Link>
           </>
         }
@@ -646,7 +752,7 @@ export function VideoEditor({ id }: { id: string }) {
             </span>
           )
         }
-        onOpenPanel={() => openComments(SCRIPT)}
+        onOpenPanel={() => openComments(PROJECT)}
         onClosePanel={closeComments}
         tools={
           <>
@@ -654,20 +760,20 @@ export function VideoEditor({ id }: { id: string }) {
               type="button"
               onClick={() =>
                 void setPinnedM({
-                  id: id as Id<"videos">,
-                  pinned: !data.video.pinnedAt,
+                  id: id as Id<"projects">,
+                  pinned: !data.project.pinnedAt,
                 })
               }
-              aria-pressed={!!data.video.pinnedAt}
-              aria-label={data.video.pinnedAt ? "Unpin" : "Pin"}
+              aria-pressed={!!data.project.pinnedAt}
+              aria-label={data.project.pinnedAt ? "Unpin" : "Pin"}
               title={
-                data.video.pinnedAt
-                  ? "Unpin from the sidebar and the top of Scripts"
-                  : "Pin to the sidebar and the top of Scripts"
+                data.project.pinnedAt
+                  ? "Unpin from the sidebar and the top of Projects"
+                  : "Pin to the sidebar and the top of Projects"
               }
-              className={`flex h-9 w-9 items-center justify-center rounded-lg hover:bg-(--c-b-ececea) ${data.video.pinnedAt ? "text-(--c-t-2358d8)" : "text-(--c-t-6b6b6b) hover:text-(--c-t-1b1b1b)"}`}
+              className={`flex h-9 w-9 items-center justify-center rounded-lg hover:bg-(--c-b-ececea) ${data.project.pinnedAt ? "text-(--c-t-2358d8)" : "text-(--c-t-6b6b6b) hover:text-(--c-t-1b1b1b)"}`}
             >
-              <IconPin size={17} filled={!!data.video.pinnedAt} />
+              <IconPin size={17} filled={!!data.project.pinnedAt} />
             </button>}
             <button
               type="button"
@@ -681,34 +787,33 @@ export function VideoEditor({ id }: { id: string }) {
             <CopyForAgent
               text={() => {
                 const origin = window.location.origin;
+                const stage = stageOf(meta.stage, meta.type);
                 const details = [
-                  `Status: ${STATUSES.find((s) => s.value === meta.status)?.label ?? meta.status}`,
-                  `Format: ${FORMATS.find((f) => f.value === meta.format)?.label ?? meta.format}`,
-                  meta.liveDate ? `Live date: ${meta.liveDate}` : null,
-                  meta.sponsored && meta.sponsored !== "none"
-                    ? `Sponsorship: ${SPONSORSHIPS.find((s) => s.value === meta.sponsored)?.label}`
-                    : null,
+                  `Type: ${typeLabel(meta.type)}`,
+                  `Stage: ${stage.label} (${stage.glyph})`,
+                  `Club: ${data.club?.name ?? "Network (no club)"}`,
+                  meta.targetDate ? `${meta.type === "digital" ? "Ship date" : "Open date"}: ${meta.targetDate}` : null,
                 ].filter(Boolean);
                 return [
-                  `Native Note script: ${meta.title || "Untitled"}`,
-                  `Script id: ${id}`,
-                  `Open in Native Note: ${origin}/v/${id}`,
-                  `Share link: ${origin}/s/${data.video.shareSlug}`,
-                  `Script, comments and every attached file (no sign-in): ${origin}/s/${data.video.shareSlug}/agent (JSON, or ?format=md)`,
-                  `Download all attached files: curl -fsSL '${origin}/s/${data.video.shareSlug}/agent?format=sh' | sh`,
+                  `Switchyards Studio project: ${meta.title || "Untitled"}`,
+                  `Project id: ${id}`,
+                  `Open in Switchyards Studio: ${origin}/p/${id}`,
+                  `Share link: ${origin}/s/${data.project.shareSlug}`,
+                  `Project, comments and every attached file (no sign-in): ${origin}/s/${data.project.shareSlug}/agent (JSON, or ?format=md)`,
+                  `Download all attached files: curl -fsSL '${origin}/s/${data.project.shareSlug}/agent?format=sh' | sh`,
                   details.join(" · "),
                   "",
-                  `To read or change this script, use the "Native Note" skill in Composio (its tools are CUSTOM_NATIVE_NOTE_*). Start with read_guide, then get_script with the script id above. You can edit the text directly (edit_lines / edit_script), comment on any line, and update captions, the brief and the Updates log. Every script edit saves the previous version, so nothing is lost.`,
+                  `To read or change this project, connect to the Switchyards Studio agent API with your key — as an MCP server, or over plain HTTP under /agent. Call read_guide first, then get_project with the project id above. You can edit the document line by line (edit_lines / replace_document), comment on any line, tick off ${words.tasks.toLowerCase()} items, add to the Log and file review rounds. Every document edit saves the previous version, so nothing is lost.`,
                 ].join("\n");
               }}
             />
             <SharePopover
               icon
               align={mobile ? "right" : "left"}
-              videoId={id}
-              shareSlug={data.video.shareSlug}
-              passcode={data.video.editPasscode}
-              getText={() => scriptToText(meta.title, mainBlocks)}
+              projectId={id}
+              shareSlug={data.project.shareSlug}
+              passcode={data.project.editPasscode}
+              getText={() => docToText(meta.title, mainBlocks)}
             />
             {(edited.length > 0 || archived.length > 0) && (
               <div className="relative">
@@ -753,7 +858,7 @@ export function VideoEditor({ id }: { id: string }) {
                       <button
                         key={d._id}
                         type="button"
-                        onClick={() => openReview(d)}
+                        onClick={() => openVersion(d)}
                         className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left hover:bg-(--c-b-f4f4f4)"
                       >
                         <span className="h-[7px] w-[7px] shrink-0 rounded-full bg-(--c-b-d92d20)" />
@@ -779,7 +884,7 @@ export function VideoEditor({ id }: { id: string }) {
                           <button
                             key={d._id}
                             type="button"
-                            onClick={() => openReview(d)}
+                            onClick={() => openVersion(d)}
                             className="block w-full rounded-md px-2 py-1.5 text-left text-[14px] text-(--c-t-1b1b1b) hover:bg-(--c-b-f4f4f4)"
                           >
                             Replaced{" "}
@@ -809,157 +914,57 @@ export function VideoEditor({ id }: { id: string }) {
           </>
         }
         banner={
-          review && (
-            <ReviewBar
-              review={review}
+          version && (
+            <VersionBar
+              version={version}
               original={mainBlocks}
               onBack={() => {
-                setReview(null);
+                setVersion(null);
                 setOpenId(null);
               }}
               onUse={async () => {
                 await mainSync.flush();
                 await promote({
-                  documentId: review.doc._id as Id<"documents">,
+                  documentId: version.doc._id as Id<"documents">,
                 });
               }}
               onDiscard={async () => {
                 const label =
-                  review.doc.kind === "edited"
+                  version.doc.kind === "edited"
                     ? "this edited version"
                     : "this earlier version";
                 if (!confirm(`Delete ${label}? This can't be undone.`)) return;
                 await removeDoc({
-                  documentId: review.doc._id as Id<"documents">,
+                  documentId: version.doc._id as Id<"documents">,
                 });
-                setReview(null);
+                setVersion(null);
                 setOpenId(null);
               }}
             />
           )
         }
         panel={panel}
-        focusMode={!!openId && openId !== SCRIPT}
+        focusMode={!!openId && openId !== PROJECT}
       >
-        <VideoTitle
-          meta={meta}
-          onChange={changeMeta}
-          readOnly={!!review || todo}
+        <ProjectTitle
+          title={meta.title}
+          onChange={(title) => changeMeta({ title })}
+          readOnly={!!version || todo}
           onEnter={() =>
             document
-              .querySelector<HTMLElement>("[data-script] .editable")
+              .querySelector<HTMLElement>("[data-doc] .editable")
               ?.focus()
           }
         />
-        {/* Journal entries are just the writing: no instructions, details, captions or brief */}
-        {!journal && !todo && <ScriptTabs
-          collapsible
-          tabs={[
-            {
-              id: "instructions",
-              label: "Editor instructions",
-              shortLabel: "Editor",
-              badge: instructionsProgress(insBlocks),
-              content: (
-                <Instructions
-                  blocks={insBlocks}
-                  setBlocks={setIns}
-                  readOnly={!!review}
-                  canUpload
-                  onFiles={(b, files) => void dropFiles(b, files)}
-                  activeId={openId}
-                  commentCounts={countsFor(insBlocks)}
-                  onOpenComments={openComments}
-                />
-              ),
-            },
-            {
-              id: "details",
-              label: "Details",
-              content: (
-                <VideoDetails
-                  meta={meta}
-                  onChange={changeMeta}
-                  readOnly={!!review}
-                  partners={partnerOptions}
-                />
-              ),
-            },
-            {
-              id: "captions",
-              label: "Captions",
-              badge: captionsBadge(meta.captions),
-              content: (
-                <Captions
-                  captions={meta.captions ?? []}
-                  onChange={(captions) => changeMeta({ captions })}
-                  readOnly={!!review}
-                />
-              ),
-            },
-            {
-              id: "brief",
-              label: "Brief",
-              content: (
-                <Brief
-                  value={meta.brief ?? ""}
-                  onChange={(brief) => changeMeta({ brief })}
-                  links={meta.briefLinks ?? []}
-                  onLinksChange={(briefLinks) => changeMeta({ briefLinks })}
-                  readOnly={!!review}
-                />
-              ),
-            },
-            {
-              id: "updates",
-              label: "Updates",
-              content: <Updates videoId={id} readOnly={!!review} />,
-            },
-          ]}
-        />}
-        {review ? (
-          <div className="mt-2">
-            {review.doc.kind === "edited" ? (
-              <DiffBlocks
-                original={mainBlocks}
-                edited={review.blocks}
-                activeId={openId}
-                commentCounts={countsFor(review.blocks)}
-                onOpenComments={(b) => openComments(b)}
-              />
-            ) : (
-              <DocEditor
-                blocks={review.blocks}
-                setBlocks={() => {}}
-                readOnly
-                activeId={openId}
-                commentCounts={countsFor(review.blocks)}
-                onOpenComments={(b) => openComments(b)}
-              />
-            )}
-          </div>
+        {/* Journal entries and the Todo list are just the writing: no tabs, no details */}
+        {journal || todo ? (
+          mainDoc
         ) : (
-          <>
-            <div data-script className="mt-2">
-              <DocEditor
-                blocks={mainBlocks}
-                setBlocks={setMain}
-                boardName={meta?.title}
-                canUpload
-                canComment
-                onFiles={(b, files) => void dropFiles(b, files)}
-                activeId={openId}
-                commentCounts={countsFor(mainBlocks)}
-                onOpenComments={openComments}
-                listOnly={todo}
-                people={todo ? (team ?? []) : undefined}
-                mentions={todo ? (scripts ?? []).map((s) => ({ id: s._id, title: s.title, format: s.format })) : undefined}
-                placeholder={todo ? "Add a to-do…" : undefined}
-              />
-            </div>
-          </>
+          // The fold flag is per pipeline: a physical project and a digital one have different tabs,
+          // so one flag for both would fold a set the person never chose to fold.
+          <Tabs collapsible storageKey={`project-${meta.type}`} tabs={tabs} />
         )}
-      </ScriptLayout>
+      </PageLayout>
       {presenting && (
         <Presentation
           title={meta.title}
@@ -990,17 +995,67 @@ export function VideoEditor({ id }: { id: string }) {
   );
 }
 
-/** "1/4 posted" once any caption is written */
-function captionsBadge(list: Meta["captions"]) {
-  const written = (list ?? []).filter(
-    (c) => c.caption.trim() || c.linkInBio.trim(),
+/**
+ * The Visuals tab: this project's review rounds, in brief. The full surface — sheets, marks,
+ * rounds — is the Reviews app, so every row links through to it rather than repeating it here.
+ */
+function ProjectReviews({ projectId }: { projectId: string }) {
+  const reviews = useQuery(api.reviews.list, { projectId: projectId as Id<"projects"> });
+  const start = `/?view=reviews&project=${projectId}`;
+
+  if (reviews === undefined) return <div className="h-10" />;
+  return (
+    <div className="pt-1">
+      {reviews.length === 0 ? (
+        <p className="m-0 py-2 text-[14px] text-(--c-t-9a9a9a)">
+          No visuals under review yet. Renders, floor plans, elevations and finish boards go here.
+        </p>
+      ) : (
+        <ul className="m-0 flex list-none flex-col p-0">
+          {reviews.map((r) => {
+            const s = reviewStatusOf(r.status);
+            return (
+              <li key={r._id} className="border-b border-(--c-l-f0f0f0) last:border-0">
+                <Link
+                  href={`/?view=reviews&review=${r._id}`}
+                  className="flex items-center gap-3 py-2.5 no-underline"
+                >
+                  <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-(--c-t-1b1b1b)">
+                    {r.title || "Untitled"}
+                  </span>
+                  <span className="shrink-0 text-[12px] tabular-nums text-(--c-t-9a9a9a)">
+                    {r.roundCount === 1 ? "1 round" : `${r.roundCount} rounds`}
+                  </span>
+                  {r.openMarks > 0 && (
+                    <span className="shrink-0 rounded bg-(--c-b-fdf3cf) px-1.5 py-px text-[12px] text-(--c-t-7a5b00)">
+                      {r.openMarks === 1 ? "1 open mark" : `${r.openMarks} open marks`}
+                    </span>
+                  )}
+                  {/* Glyph and word together: the colour is never the only thing that says where this stands */}
+                  <span className="inline-flex shrink-0 items-center gap-1.5 text-[13px] text-(--c-t-6b6b6b)">
+                    <span aria-hidden="true" className="leading-none" style={{ color: s.hex }}>
+                      {s.glyph}
+                    </span>
+                    {s.label}
+                  </span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <Link
+        href={start}
+        className="mt-2 inline-flex h-[30px] items-center gap-2 text-[14px] text-(--c-t-737373) no-underline hover:text-(--c-t-1b1b1b)"
+      >
+        <IconPlus />
+        Start a review round
+      </Link>
+    </div>
   );
-  return written.length
-    ? `${written.filter((c) => c.posted).length}/${written.length} posted`
-    : "";
 }
 
-/** Copies a short note to hand an AI agent: which script this is and how to reach it through the Native Note skill. */
+/** Copies a short note to hand an AI agent: which project this is and how to reach it. */
 function CopyForAgent({ text }: { text: () => string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -1025,22 +1080,22 @@ function CopyForAgent({ text }: { text: () => string }) {
   );
 }
 
-function ReviewBar({
-  review,
+function VersionBar({
+  version,
   original,
   onBack,
   onUse,
   onDiscard,
 }: {
-  review: { doc: DocInfo; blocks: Block[] };
+  version: { doc: DocInfo; blocks: Block[] };
   original: Block[];
   onBack: () => void;
   onUse: () => Promise<void>;
   onDiscard: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const isEdit = review.doc.kind === "edited";
-  const s = isEdit ? computeDiff(original, review.blocks).summary : null;
+  const isEdit = version.doc.kind === "edited";
+  const s = isEdit ? computeDiff(original, version.blocks).summary : null;
   const parts = s
     ? [
         s.changed && `${s.changed} changed`,
@@ -1057,12 +1112,12 @@ function ReviewBar({
           {isEdit ? (
             <>
               <span className="font-medium">Edited version</span> by{" "}
-              {review.doc.editorName || "someone"},{" "}
-              {timeAgo(new Date(review.doc.updatedAt).toISOString())}
+              {version.doc.editorName || "someone"},{" "}
+              {timeAgo(new Date(version.doc.updatedAt).toISOString())}
               {parts.length > 0 ? (
                 <span className="text-(--c-t-d92d20)">
                   {" "}
-                  · {parts.join(", ")} · changes in red
+                  · {parts.join(", ")} · changes underlined and struck through
                 </span>
               ) : (
                 <span> · no changes yet</span>
@@ -1071,11 +1126,11 @@ function ReviewBar({
           ) : (
             <>
               <span className="font-medium">Earlier version</span>, replaced{" "}
-              {new Date(review.doc.updatedAt).toLocaleDateString(undefined, {
+              {new Date(version.doc.updatedAt).toLocaleDateString(undefined, {
                 month: "short",
                 day: "numeric",
               })}
-              {review.doc.editorName && ` by ${review.doc.editorName}`}
+              {version.doc.editorName && ` by ${version.doc.editorName}`}
             </>
           )}
         </div>

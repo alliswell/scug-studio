@@ -34,7 +34,7 @@ export function ScratchboardList() {
       <div className="mb-6 flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <h1 className="m-0 text-[28px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">Scratchboard</h1>
-          <p className="m-0 mt-1 text-[14px] text-(--c-t-737373)">Drawings in your short-form style: pencil on paper, with Play to watch them drawn.</p>
+          <p className="m-0 mt-1 text-[14px] text-(--c-t-737373)">Hand sketches: pencil on paper, with Play to watch them drawn.</p>
         </div>
         <button
           type="button"
