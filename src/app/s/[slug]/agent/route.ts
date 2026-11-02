@@ -114,7 +114,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
 
   const data = {
     about:
-      "Switchyards Studio project, shared by link. `document` (lines in order) and `tasks` say what the work is; comments on each line say what goes where, and `files` are the attached drawings, renders and photos (direct download URLs). Run `downloadScript` (or GET this URL with ?format=sh) to download everything into ./assets. This link is read-only.",
+      "Switchyards Studio project, shared by link. `document` (lines in order) and `tasks` say what the work is; comments on each line say what goes where, and `files` are the attached drawings, renders and photos (direct download URLs). Only comments the studio shared on this link are here — its internal thread is not. Run `downloadScript` (or GET this URL with ?format=sh) to download everything into ./assets. This link is read-only.",
     title: shared.project.title || "Untitled",
     shareUrl: `${origin}/s/${slug}`,
     type: typeLabel(shared.project.type),

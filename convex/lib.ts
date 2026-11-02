@@ -21,18 +21,54 @@ export async function docBlocks(ctx: QueryCtx, documentId: Id<"documents">) {
     .query("blocks")
     .withIndex("by_document", (q) => q.eq("documentId", documentId))
     .collect();
-  return rows.map((b) => ({
+  return rows.map(blockView);
+}
+
+/** One stored line as the editor reads it. */
+export function blockView(b: Doc<"blocks">) {
+  return {
     id: b.key,
     type: b.type,
     content: b.content,
     checked: b.checked,
     color: b.color,
     textColor: b.textColor ?? null,
+    /** What the editor sends back to prove it is changing the line it last read. See blocks.rev. */
+    rev: b.rev ?? 0,
     source_block_id: b.sourceBlockId,
     ...(b.images ? { images: b.images } : {}),
     ...(b.indent ? { indent: b.indent } : {}),
     ...(b.assignee ? { assignee: b.assignee } : {}),
-  }));
+  };
+}
+
+/**
+ * Everything about a line except where it sits. Two lines with the same signature are the same
+ * line as far as a clash is concerned, so a line that has only moved never reads as one — which
+ * matters because inserting a single line at the top renumbers every line beneath it.
+ */
+export function contentSig(b: {
+  type: string;
+  content: string;
+  checked?: boolean;
+  color?: unknown;
+  textColor?: unknown;
+  sourceBlockId?: string | null;
+  indent?: number;
+  assignee?: string | null;
+  images?: { id: string; url: string | null; storageId: unknown; name: string | null; mime: string | null; size: number | null }[];
+}) {
+  return JSON.stringify([
+    b.type,
+    b.content,
+    !!b.checked,
+    b.color ?? null,
+    b.textColor ?? null,
+    b.sourceBlockId ?? null,
+    b.indent ?? 0,
+    b.assignee ?? null,
+    (b.images ?? []).map((i) => [i.id, i.url, i.storageId ?? null, i.name, i.mime, i.size]),
+  ]);
 }
 
 /** A block's comments, turning legacy direct attachments into one empty comment each. */
@@ -47,8 +83,21 @@ export function commentsOf(b: Pick<Doc<"blocks">, "attachments" | "comments" | "
   return [...legacy, ...(b.comments ?? [])];
 }
 
-export function filesOf(b: Pick<Doc<"blocks">, "attachments" | "comments">): Id<"_storage">[] {
+/** The pictures in an images block. The editor sends these, so it is the one set a save may free. */
+export function imagesOf(b: Pick<Doc<"blocks">, "images">): Id<"_storage">[] {
   const out: Id<"_storage">[] = [];
+  for (const a of b.images ?? []) if (a.storageId) out.push(a.storageId);
+  return out;
+}
+
+/**
+ * Every stored file a block holds. Pictures are in here too: leave them out and a picture that is
+ * replaced or deleted keeps its blob forever. Because releaseFiles re-scans every block through
+ * this same function before deleting anything, both halves have to move together — counting
+ * pictures on only one side would start deleting ones that are still on screen.
+ */
+export function filesOf(b: Pick<Doc<"blocks">, "attachments" | "comments" | "images">): Id<"_storage">[] {
+  const out: Id<"_storage">[] = imagesOf(b);
   for (const a of b.attachments ?? []) if (a.storageId) out.push(a.storageId);
   for (const c of b.comments ?? []) for (const a of c.attachments) if (a.storageId) out.push(a.storageId);
   return out;
@@ -161,6 +210,7 @@ export async function writeEditedVersion(
       ...(b.textColor ? { textColor: b.textColor } : {}),
       ...(b.images ? { images: b.images } : {}),
       ...(b.indent ? { indent: Math.max(0, Math.min(4, Math.round(b.indent))) } : {}),
+      rev: 1,
       ...(b.assignee ? { assignee: b.assignee } : {}),
       sourceBlockId: b.sourceBlockId,
     });

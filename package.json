@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:gradients": "node --test scripts/board-gradients.test.mjs",
+    "test:sync": "node --experimental-strip-types --test scripts/doc-sync.test.mjs",
     "preview:gradients": "node scripts/preview-board-gradients.mjs"
   },
   "dependencies": {

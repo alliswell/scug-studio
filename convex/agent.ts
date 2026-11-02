@@ -8,7 +8,7 @@ import { ConvexError, v, type Infer } from "convex/values";
 import { httpAction, internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { newSlug, writeEditedVersion } from "./lib";
+import { contentSig, filesOf, newSlug, releaseFiles, writeEditedVersion } from "./lib";
 import { blockColor, blockType, projectStage, projectType, textColor } from "./schema";
 import { authorized } from "./agentAuth";
 import { assertStage, firstStage } from "./projects";
@@ -393,10 +393,17 @@ export const addTasks = internalMutation({
       .query("blocks")
       .withIndex("by_document", (q) => q.eq("documentId", tasks._id))
       .collect();
-    // Replace a lone empty placeholder to-do instead of appending after it
-    for (const b of current) if (!b.content.trim() && current.length === 1) await ctx.db.delete(b._id);
+    // A lone empty placeholder gets the first item written INTO it rather than being deleted and
+    // replaced: somebody may have the list open and be typing in that very line, and a delete would
+    // take their words with it. Writing to it moves the rev instead, so their save clashes and they
+    // are asked.
+    const lone = current.length === 1 && !current[0].content.trim() ? current[0] : null;
+    const rest = [...items];
+    if (lone && rest.length) {
+      await ctx.db.patch(lone._id, { content: rest.shift()!.slice(0, MAX_TEXT), type: "todo", rev: (lone.rev ?? 0) + 1 });
+    }
     let position = current.reduce((m, b) => Math.max(m, b.position), -1) + 1;
-    for (const text of items) {
+    for (const text of rest) {
       await ctx.db.insert("blocks", {
         documentId: tasks._id,
         projectId: p._id,
@@ -407,6 +414,7 @@ export const addTasks = internalMutation({
         checked: false,
         color: null,
         sourceBlockId: null,
+        rev: 1,
       });
     }
     await ctx.db.patch(p._id, { updatedAt: now });
@@ -430,6 +438,8 @@ export const updateTask = internalMutation({
     await ctx.db.patch(block._id, {
       ...(text !== undefined ? { content: text.slice(0, MAX_TEXT) } : {}),
       ...(checked !== undefined ? { checked } : {}),
+      // Bump the rev so an open editor sees this as someone else's change rather than writing over it
+      rev: (block.rev ?? 0) + 1,
     });
     await ctx.db.patch(p._id, { updatedAt: Date.now() });
     return { key };
@@ -546,6 +556,7 @@ async function replaceMain(ctx: MutationCtx, p: Doc<"projects">, lines: NewLine[
       ...(("assignee" in l ? l.assignee : prev?.assignee) ? { assignee: ("assignee" in l ? l.assignee : prev?.assignee)! } : {}),
       ...(prev?.attachments ? { attachments: prev.attachments } : {}),
       ...(l.images ? { images: l.images } : prev?.images ? { images: prev.images } : {}),
+      rev: 1,
     });
     out.push({ key, type, text });
   }
@@ -567,6 +578,105 @@ async function replaceMain(ctx: MutationCtx, p: Doc<"projects">, lines: NewLine[
     ...comments,
     note:
       "Saved. The previous text (and where its comments were) is kept under Versions and can be restored." +
+      (comments.commentsOnRemovedLines ? " Some comments were on lines you removed; they now show on the whole project. Use move_comment to put them on the right line." : ""),
+  };
+}
+
+/**
+ * Writes `lines` into the project's existing main document, line by line.
+ *
+ * The editor is keyed to a document id, so replacing the document — which is what replaceMain does
+ * to keep a version — yanks it out from under anyone typing in it and drops whatever they had not
+ * saved yet. For an append or a line edit that is a steep price for a version-history entry nobody
+ * asked for, so those come through here instead: a kept line keeps its row, a changed line moves
+ * its rev on so an open editor sees a clash rather than a silent overwrite, and only a line that
+ * genuinely went is deleted.
+ *
+ * A full rewrite and a restore still go through replaceMain — there, the old text IS the point.
+ */
+async function writeMainLines(ctx: MutationCtx, p: Doc<"projects">, lines: NewLine[], agentName: string | undefined) {
+  checkLines(lines);
+  const name = (agentName?.trim() || "Claude").slice(0, 60);
+  const now = Date.now();
+  let main = await docOf(ctx, p._id, "main");
+  if (!main) {
+    const id = await ctx.db.insert("documents", { projectId: p._id, kind: "main", editorName: name, guestToken: null, updatedAt: now });
+    main = (await ctx.db.get(id))!;
+  }
+  const old = await ctx.db
+    .query("blocks")
+    .withIndex("by_document", (q) => q.eq("documentId", main._id))
+    .collect();
+  const byKey = new Map(old.map((b) => [b.key, b]));
+  const used = new Set<string>();
+  const out: { key: string; type: NonNullable<NewLine["type"]>; text: string }[] = [];
+
+  for (const [position, l] of lines.entries()) {
+    const prev = l.key && byKey.has(l.key) && !used.has(l.key) ? byKey.get(l.key)! : undefined;
+    const reuse = !prev && l.key && !used.has(l.key) && /^[\w-]{8,64}$/.test(l.key) ? l.key : undefined;
+    const key = prev ? prev.key : (reuse ?? crypto.randomUUID());
+    used.add(key);
+    const type = l.type ?? prev?.type ?? "p";
+    let text = l.text;
+    if (type === "board") {
+      // A board line holds the board's id; agents may give the id or its /b/<id> link
+      const id = boardIdOf(ctx, text);
+      if (!id || !(await ctx.db.get(id))) throw new ConvexError(`"${text.slice(0, 80)}" isn't a board. Use list_boards for ids.`);
+      const frame = text.match(/[#?&](?:frame|element)=([\w-]+)/)?.[1];
+      text = frame ? `${id}#frame=${frame}` : id;
+    }
+    const indent = l.indent ?? prev?.indent;
+    const assignee = "assignee" in l ? l.assignee : prev?.assignee;
+    const images = l.images ?? prev?.images;
+    const next = {
+      key,
+      position,
+      type,
+      content: text.slice(0, MAX_TEXT),
+      checked: l.checked ?? prev?.checked ?? false,
+      color: l.color !== undefined ? l.color : (prev?.color ?? null),
+      textColor: l.textColor !== undefined ? l.textColor : (prev?.textColor ?? null),
+      sourceBlockId: null,
+      indent: indent ? Math.max(0, Math.min(4, Math.round(indent))) : undefined,
+      assignee: assignee ?? undefined,
+      ...(images ? { images } : {}),
+    };
+    if (prev) {
+      // Only a real change to the words moves the rev; a line that merely shifted must not, or an
+      // open editor clashes on every line below an insert.
+      const changed = contentSig(prev) !== contentSig(next);
+      await ctx.db.patch(prev._id, { ...next, ...(changed ? { rev: (prev.rev ?? 0) + 1 } : {}) });
+    } else {
+      await ctx.db.insert("blocks", { ...next, documentId: main._id, projectId: p._id, rev: 1 });
+    }
+    out.push({ key, type, text });
+  }
+
+  const dropped = [];
+  for (const b of old) {
+    if (used.has(b.key)) continue;
+    dropped.push(...filesOf(b));
+    await ctx.db.delete(b._id);
+  }
+  await ctx.db.patch(main._id, { updatedAt: now });
+  await ctx.db.patch(p._id, { updatedAt: now });
+  if (dropped.length) await releaseFiles(ctx, p._id, dropped);
+  // Comments stay on the lines they were on, because those rows never moved. Only the ones whose
+  // line genuinely went need re-homing.
+  const tasks = await docOf(ctx, p._id, "tasks");
+  const taskKeys = new Set(tasks ? (await linesOf(ctx, tasks._id)).map((l) => l.key) : []);
+  const comments = await reattachComments(
+    ctx,
+    p._id,
+    old.map((b) => ({ key: b.key, content: b.content })),
+    out.map((l) => ({ key: l.key, content: l.text })),
+    taskKeys,
+  );
+  return {
+    lines: out,
+    ...comments,
+    note:
+      "Saved into the open document, so anyone editing it keeps their place." +
       (comments.commentsOnRemovedLines ? " Some comments were on lines you removed; they now show on the whole project. Use move_comment to put them on the right line." : ""),
   };
 }
@@ -634,7 +744,7 @@ export const editLines = internalMutation({
         list.splice(after(o.afterKey), 0, moved);
       }
     }
-    return replaceMain(ctx, p, list, agentName);
+    return writeMainLines(ctx, p, list, agentName);
   },
 });
 
@@ -1014,7 +1124,7 @@ export const addTodoItems = internalMutation({
       ...(it.assignee ? { assignee: personOf(people, it.assignee) } : {}),
     }));
     list.splice(at, 0, ...added);
-    const res = await replaceMain(ctx, todo, list, agentName);
+    const res = await writeMainLines(ctx, todo, list, agentName);
     return { todo: todo._id, url: projectUrl(todo._id), added: items.length, lines: res };
   },
 });
@@ -1059,6 +1169,8 @@ export const updateTodoItem = internalMutation({
       patch.content = text;
     }
     if (assignee !== undefined) patch.assignee = assignee ? personOf(await teamOf(ctx), assignee) : undefined;
+    // Bump the rev so an open editor sees this as someone else's change rather than writing over it
+    patch.rev = (block.rev ?? 0) + 1;
     await ctx.db.patch(block._id, patch);
     const now = Date.now();
     await ctx.db.patch(main!._id, { updatedAt: now });

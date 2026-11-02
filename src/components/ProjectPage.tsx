@@ -13,7 +13,7 @@ import {
   type CommentActions,
 } from "@/lib/comments";
 import { readText, setCaret } from "@/lib/caret";
-import { useDocSync, useLoadBlocks, type SaveState } from "@/lib/sync";
+import { fromServer, useDocSync, useLoadBlocks, type Clash, type SaveState, type ServerBlock } from "@/lib/sync";
 import {
   reviewStatusOf,
   stageOf,
@@ -49,6 +49,7 @@ import {
   IconHistory,
   IconPin,
   IconPlus,
+  IconX,
 } from "./icons";
 import {
   ShowSidebarButton,
@@ -121,13 +122,28 @@ export function ProjectPage({ id }: { id: string }) {
     if (!list || !pendingKey.current) return;
     store.setQuery(api.comments.list, { projectId: args.projectId }, [
       ...list,
-      { id: pendingKey.current as Id<"comments">, blockKey: args.blockKey, keyHistory: [], quote: null, text: "", authorName: null, agent: false, mine: true, attachments: [], createdAt: pendingAt.current },
+      {
+        id: pendingKey.current as Id<"comments">,
+        blockKey: args.blockKey,
+        keyHistory: [],
+        quote: null,
+        text: "",
+        authorName: null,
+        agent: false,
+        mine: true,
+        // Shows where it is going from the first keystroke, so the badge never appears late
+        shared: !!args.shared,
+        guest: false,
+        attachments: [],
+        createdAt: pendingAt.current,
+      },
     ]);
   });
   /** Saved comment id → the key it had while it was being added */
   const aliases = useRef(new Map<string, string>());
   const updateCommentM = useMutation(api.comments.update);
   const removeCommentM = useMutation(api.comments.remove);
+  const setSharedM = useMutation(api.comments.setShared);
   const moveCommentM = useMutation(api.comments.moveToLine);
   /** A comment being put onto a line: the next line clicked gets it */
   const [placing, setPlacing] = useState<string | null>(null);
@@ -191,6 +207,8 @@ export function ProjectPage({ id }: { id: string }) {
   const metaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMeta = useRef<Partial<Meta>>({});
   const [metaState, setMetaState] = useState<SaveState>("idle");
+  /** Text typed into a document that was replaced before it could be saved */
+  const [stranded, setStranded] = useState<string[]>([]);
 
   const setMain: SetList = useCallback(
     (fn) => setMainBlocks((p) => (p ? fn(p) : p)),
@@ -218,29 +236,47 @@ export function ProjectPage({ id }: { id: string }) {
       });
   }, [data?.project, meta]);
 
-  // Load blocks when we first see the documents, and again if the main document is replaced
+  // The document is read live, not once. The first read seeds the editor; every read after it is
+  // merged in, so a teammate's lines turn up while you are working instead of only on reload.
+  const mainRows = useQuery(api.docs.blocks, serverMain ? { documentId: serverMain as Id<"documents"> } : "skip") as ServerBlock[] | undefined;
+  const taskRows = useQuery(api.docs.blocks, serverTasks ? { documentId: serverTasks as Id<"documents"> } : "skip") as ServerBlock[] | undefined;
+
   useEffect(() => {
-    if (!serverMain || serverMain === mainId) return;
-    void loadBlocks(serverMain).then((b) => {
-      mainSync.seed(serverMain, b);
+    if (!serverMain || !mainRows) return;
+    if (serverMain !== mainId) {
+      // The document was replaced under us (a restored version, or a full rewrite). Anything typed
+      // and not yet saved belongs to the old document and cannot be written to the new one, so it
+      // is put on screen to be copied rather than disappearing with it.
+      if (mainId) {
+        const lost = mainSync.unsaved();
+        if (lost.length) setStranded(lost.map((b) => b.content.trim()).filter(Boolean));
+      }
+      mainSync.seed(serverMain, mainRows.map(fromServer), new Map(mainRows.map((r) => [r.id, r.rev])));
       // The Todo list is all checkboxes (lines written as bullets or text become to-dos; this saves)
-      const list = b.length ? b : [emptyBlock()];
+      const list = mainRows.length ? mainRows.map(fromServer) : [emptyBlock()];
       setMainBlocks(todoRef.current ? list.map((x) => (x.type === "bullet" || x.type === "number" || x.type === "p" ? { ...x, type: "todo" as const } : x)) : list);
       setMainId(serverMain);
       setVersion(null);
       setOpenId(null);
-    });
+      return;
+    }
+    const merged = mainSync.mergeServer(mainRows);
+    if (merged) setMainBlocks(merged.length ? merged : [emptyBlock()]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverMain]);
+  }, [serverMain, mainRows, mainId]);
+
   useEffect(() => {
-    if (!serverTasks || serverTasks === tasksId) return;
-    void loadBlocks(serverTasks).then((b) => {
-      tasksSync.seed(serverTasks, b);
-      setTaskBlocks(b.length ? b : [{ ...emptyBlock(), type: "todo" }]);
+    if (!serverTasks || !taskRows) return;
+    if (serverTasks !== tasksId) {
+      tasksSync.seed(serverTasks, taskRows.map(fromServer), new Map(taskRows.map((r) => [r.id, r.rev])));
+      setTaskBlocks(taskRows.length ? taskRows.map(fromServer) : [{ ...emptyBlock(), type: "todo" }]);
       setTasksId(serverTasks);
-    });
+      return;
+    }
+    const merged = tasksSync.mergeServer(taskRows);
+    if (merged) setTaskBlocks(merged.length ? merged : [{ ...emptyBlock(), type: "todo" }]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverTasks]);
+  }, [serverTasks, taskRows, tasksId]);
 
   useEffect(() => {
     const busy = Object.values(uploading).some((list) =>
@@ -288,7 +324,7 @@ export function ProjectPage({ id }: { id: string }) {
     });
 
   const actions: CommentActions = {
-    add: async (blockKey) => {
+    add: async (blockKey, shared) => {
       // Show and focus the box right away; it keeps its key once the server has it
       const temp = `pending-${uid()}`;
       pendingKey.current = temp;
@@ -298,6 +334,7 @@ export function ProjectPage({ id }: { id: string }) {
         projectId: id as Id<"projects">,
         blockKey,
         text: "",
+        shared,
       });
       pendingKey.current = null;
       aliases.current.set(cid, temp);
@@ -307,6 +344,7 @@ export function ProjectPage({ id }: { id: string }) {
     update: (cid, text) =>
       void (cid.startsWith("pending-") || updateCommentM({ id: cid as Id<"comments">, text })),
     remove: (cid) => void (cid.startsWith("pending-") || removeCommentM({ id: cid as Id<"comments"> })),
+    setShared: (cid, shared) => void (cid.startsWith("pending-") || setSharedM({ id: cid as Id<"comments">, shared })),
     addLink: (cid, url) =>
       void attachM({
         id: cid as Id<"comments">,
@@ -534,6 +572,27 @@ export function ProjectPage({ id }: { id: string }) {
   const archived = docs
     .filter((d) => d.kind === "archived")
     .sort((a, b) => b.updatedAt - a.updatedAt);
+  // Lines this person and somebody else both changed. Ours stayed in the document and theirs was
+  // refused by the server, so the words still exist on both sides and the choice is made here.
+  const allClashes = [
+    ...mainSync.clashes.map((c) => ({ c, where: "main" as const, mine: mainBlocks.find((b) => b.id === c.key) })),
+    ...tasksSync.clashes.map((c) => ({ c, where: "tasks" as const, mine: taskBlocks.find((b) => b.id === c.key) })),
+  ];
+  const resolveClash = (key: string, where: "main" | "tasks", winner: "mine" | "theirs") => {
+    const sync = where === "main" ? mainSync : tasksSync;
+    const set = where === "main" ? setMainBlocks : setTaskBlocks;
+    const { block, at, removed } = sync.resolve(key, winner);
+    set((prev) => {
+      if (!prev) return prev;
+      if (removed) return prev.filter((b) => b.id !== key);
+      if (!block) return prev;
+      if (prev.some((b) => b.id === key)) return prev.map((b) => (b.id === key ? block : b));
+      // Their line was never on our screen: we had deleted it, and choosing theirs puts it back.
+      const i = Math.min(at, prev.length);
+      return [...prev.slice(0, i), block, ...prev.slice(i)];
+    });
+  };
+
   const states = [mainSync.state, tasksSync.state, metaState];
   const saveLabel = states.includes("error")
     ? "Offline, retrying…"
@@ -956,6 +1015,9 @@ export function ProjectPage({ id }: { id: string }) {
               ?.focus()
           }
         />
+        {/* Above the tabs on purpose: a line someone else changed matters whichever tab you are on */}
+        <ClashBar clashes={allClashes} onResolve={resolveClash} />
+        <StrandedBar lines={stranded} onClose={() => setStranded([])} />
         {/* Journal entries and the Todo list are just the writing: no tabs, no details */}
         {journal || todo ? (
           mainDoc
@@ -1190,5 +1252,112 @@ function PresentIcon() {
       <rect x="2.5" y="3.5" width="15" height="10" rx="2" />
       <path d="M8.5 6.6v4.3l3.6-2.15-3.6-2.15ZM7 16.5h6M10 13.5v3" />
     </svg>
+  );
+}
+
+/**
+ * Lines this person and somebody else both changed at once.
+ *
+ * Theirs never landed on top of yours — the server refused the write — so both versions still
+ * exist and this is where you pick. It sits above the tabs because a line going stale matters
+ * whichever tab you happen to be on, and it says plainly that the line has STOPPED SAVING, which
+ * is the part that costs you work if you carry on typing into it and never read this.
+ *
+ * It also says what actually differs. When two people edit the wording and the tick of the same
+ * to-do, the two versions read identically, and "keep mine" would silently untick it.
+ */
+function ClashBar({
+  clashes,
+  onResolve,
+}: {
+  clashes: { c: Clash; where: "main" | "tasks"; mine: Block | undefined }[];
+  onResolve: (key: string, where: "main" | "tasks", winner: "mine" | "theirs") => void;
+}) {
+  if (!clashes.length) return null;
+  const btn =
+    "inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[12.5px] font-medium ring-1 ring-(--c-l-e3e3e0) text-(--c-t-4a4a4a) hover:text-(--c-t-1b1b1b) hover:ring-(--c-l-c9c9c6)";
+  return (
+    <div role="status" className="mt-4 rounded-lg bg-(--c-b-fef6f5) px-3.5 py-3 ring-1 ring-(--c-l-f6d5d1)">
+      <p className="m-0 text-[13.5px] font-semibold text-(--c-t-b42318)">
+        {clashes.length === 1 ? "A line stopped saving: someone else changed it too" : `${clashes.length} lines stopped saving: someone else changed them too`}
+      </p>
+      <p className="m-0 mt-0.5 text-[12.5px] text-(--c-t-6b6b6b)">
+        Nothing was overwritten, and what you see is still yours — but {clashes.length === 1 ? "this line will not save" : "these lines will not save"} until you pick.
+      </p>
+      <ul className="m-0 mt-2.5 list-none space-y-1.5 p-0">
+        {clashes.map(({ c, where, mine }) => (
+          <li key={`${where}:${c.key}`} className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-[13px] text-(--c-t-4a4a4a)">
+              <span className="text-(--c-t-8a8a8a)">{c.reason === "kept" ? "You deleted this; theirs: " : c.reason === "removed" ? "" : "Theirs: "}</span>
+              {c.reason === "removed" ? "They deleted this line" : describeTheirs(c, mine)}
+              {where === "tasks" && <span className="text-(--c-t-8a8a8a)"> · on the task list</span>}
+            </span>
+            <button type="button" className={btn} onClick={() => onResolve(c.key, where, "theirs")}>
+              {c.reason === "removed" ? "Delete it" : c.reason === "kept" ? "Put theirs back" : "Use theirs"}
+            </button>
+            <button type="button" className={btn} onClick={() => onResolve(c.key, where, "mine")}>
+              {c.reason === "kept" ? "Delete it anyway" : "Keep mine"}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Their version, in a way that shows the difference. If the words match, the clash is about
+ * something invisible in a line of text — a tick, an assignee, an indent — and saying only the
+ * text would invite the person to discard exactly the thing they cannot see.
+ */
+function describeTheirs(c: Clash, mine: Block | undefined) {
+  const t = c.theirs;
+  if (!t) return "(gone)";
+  const text = t.content.trim();
+  if (!mine || text !== mine.content.trim()) return text || "(blank line)";
+  const diffs: string[] = [];
+  if (!!t.checked !== !!mine.checked) diffs.push(t.checked ? "ticked" : "unticked");
+  if ((t.assignee ?? null) !== (mine.assignee ?? null)) diffs.push(t.assignee ? "assigned to someone" : "unassigned");
+  if ((t.indent ?? 0) !== (mine.indent ?? 0)) diffs.push(`indented to level ${t.indent ?? 0}`);
+  if ((t.type ?? "") !== (mine.type ?? "")) diffs.push(`made a ${t.type}`);
+  return diffs.length ? `same words, but ${diffs.join(", ")}` : text || "(blank line)";
+}
+
+/**
+ * Words typed into a document that was replaced before they could be saved — someone restored an
+ * earlier version, or rewrote the whole thing, while this person was mid-sentence. The old document
+ * is archived by the time we hear about it, so the text cannot be written where it was going. It is
+ * shown here instead of vanishing, which is what used to happen.
+ */
+function StrandedBar({ lines, onClose }: { lines: string[]; onClose: () => void }) {
+  if (!lines.length) return null;
+  return (
+    <div role="status" className="mt-4 rounded-lg bg-(--c-b-fdf3cf) px-3.5 py-3 ring-1 ring-(--c-l-f6d5d1)">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="m-0 text-[13.5px] font-semibold text-(--c-t-7a5b00)">
+            This document was replaced while you were typing
+          </p>
+          <p className="m-0 mt-0.5 text-[12.5px] text-(--c-t-6b6b6b)">
+            {lines.length === 1 ? "This line never saved" : `These ${lines.length} lines never saved`}. Copy anything you still want, then close this.
+          </p>
+          <ul className="m-0 mt-2 list-none space-y-1 p-0">
+            {lines.map((l, i) => (
+              <li key={i} className="rounded-md bg-(--c-b-ffffff) px-2 py-1 text-[13px] text-(--c-t-1b1b1b) ring-1 ring-(--c-l-e3e3e0)">
+                {l}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Dismiss"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-(--c-t-8a8a8a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)"
+        >
+          <IconX />
+        </button>
+      </div>
+    </div>
   );
 }

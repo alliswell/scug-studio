@@ -63,6 +63,16 @@ export function CommentsPanel({
   const canUpload = !!(canWrite && actions?.addFiles);
   const mobile = useIsMobile();
   const pickNew = useRef<HTMLInputElement>(null);
+  /** Only the studio chooses where a comment goes; a guest's own comment is always on their link. */
+  const canShare = !!(canWrite && actions?.setShared);
+  /**
+   * Comments stay inside the studio by default — a share link goes to a contractor or a landlord.
+   * The exception is a thread somebody outside has already written in: answering them privately
+   * would leave them waiting on a reply they can never see. The control says which it is either way.
+   */
+  const answeringGuest = comments.some((c) => c.guest);
+  const [nextShared, setNextShared] = useState(answeringGuest);
+  useEffect(() => setNextShared(answeringGuest), [answeringGuest, blockKey]);
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => {
@@ -74,7 +84,7 @@ export function CommentsPanel({
 
   const addWithFiles = async (files: File[]) => {
     if (!actions?.addFiles) return;
-    const id = await actions.add(blockKey);
+    const id = await actions.add(blockKey, canShare ? nextShared : undefined);
     actions.addFiles(id, files);
   };
 
@@ -129,6 +139,7 @@ export function CommentsPanel({
             canEdit={!!canWrite && c.mine && !c.agent}
             canDelete={!!canWrite && (c.mine || !!canDeleteOthers)}
             canUpload={canUpload && c.mine}
+            canShare={canShare}
             actions={actions}
             autoFocus={!!focusId && (focusId === c.id || focusId === c.clientKey)}
             onOpenImage={onOpenImage}
@@ -142,14 +153,31 @@ export function CommentsPanel({
 
       {canWrite && actions && (
         <div className="flex flex-col gap-3 px-4 pb-6 pt-4">
-          <button
-            type="button"
-            onClick={() => void actions.add(blockKey)}
-            className="inline-flex h-8 w-fit items-center gap-2 text-[14px] text-(--c-t-737373) hover:text-(--c-t-1b1b1b)"
-          >
-            <span className="text-[18px] leading-none">+</span>
-            <span>Add comment</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <button
+              type="button"
+              onClick={() => void actions.add(blockKey, canShare ? nextShared : undefined)}
+              className="inline-flex h-8 w-fit items-center gap-2 text-[14px] text-(--c-t-737373) hover:text-(--c-t-1b1b1b)"
+            >
+              <span className="text-[18px] leading-none">+</span>
+              <span>Add comment</span>
+            </button>
+            {canShare && (
+              // Said in words, not signalled by a colour, and said before you write rather than after
+              <button
+                type="button"
+                aria-pressed={nextShared}
+                onClick={() => setNextShared(!nextShared)}
+                title={nextShared ? "This will be readable by anyone with the share link. Click to keep it inside the studio." : "Only the studio will see this. Click to put it on the share link."}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] font-medium ring-1 ${
+                  nextShared ? "bg-(--c-b-e7eefb) text-(--c-t-2358d8) ring-(--c-l-2358d8)/25" : "text-(--c-t-737373) ring-(--c-l-e3e3e0) hover:text-(--c-t-1b1b1b)"
+                }`}
+              >
+                <span aria-hidden="true">{nextShared ? "↗" : "·"}</span>
+                {nextShared ? "Goes on the share link" : "Studio only"}
+              </button>
+            )}
+          </div>
           {canUpload && mobile && (
             <>
               <button
@@ -185,6 +213,7 @@ function CommentItem({
   canEdit,
   canDelete,
   canUpload,
+  canShare,
   actions,
   autoFocus,
   onOpenImage,
@@ -198,6 +227,8 @@ function CommentItem({
   canEdit: boolean;
   canDelete: boolean;
   canUpload: boolean;
+  /** The studio can move its own comments on and off the share link */
+  canShare: boolean;
   actions?: CommentActions;
   autoFocus?: boolean;
   onOpenImage?: (url: string) => void;
@@ -281,9 +312,22 @@ function CommentItem({
             </span>
           )}
           <span className={`truncate ${c.agent ? "font-medium text-(--c-t-5b3fb0)" : ""}`}>{c.authorName || "Someone"}</span>
+          {c.guest && (
+            <span className="inline-flex shrink-0 items-center rounded-full bg-(--c-b-f1f1ef) px-2 py-0.5 text-[11px] font-medium text-(--c-t-6b6b6b)">
+              From the link
+            </span>
+          )}
+          {c.shared && !c.guest && (
+            // Spelled out, never a bare colour: writing something internal in a shared thread is
+            // the kind of mistake you only make once, and only if nothing told you.
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-(--c-b-e7eefb) px-2 py-0.5 text-[11px] font-medium text-(--c-t-2358d8)">
+              <span aria-hidden="true">↗</span>
+              On the share link
+            </span>
+          )}
           <span>· {timeAgo(new Date(c.createdAt).toISOString())}</span>
         </span>
-        {(canEdit || canDelete) && (
+        {(canEdit || canDelete || canShare) && (
           <div
             className={`flex items-center gap-0.5 ${
               alwaysShowActions ? "" : "opacity-0 transition-opacity focus-within:opacity-100 group-hover/comment:opacity-100"
@@ -331,6 +375,20 @@ function CommentItem({
                 className="flex h-7 w-7 items-center justify-center rounded-md text-[13px] font-semibold text-(--c-t-8a8a8a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)"
               >
                 @
+              </button>
+            )}
+            {canShare && !c.guest && (
+              <button
+                type="button"
+                aria-pressed={c.shared}
+                aria-label={c.shared ? "Take this off the share link" : "Show this on the share link"}
+                title={c.shared ? "Anyone with the share link can read this. Click to keep it inside the studio." : "Only the studio sees this. Click to show it on the share link."}
+                onClick={() => actions?.setShared?.(c.id, !c.shared)}
+                className={`flex h-7 items-center rounded-md px-1.5 text-[12px] font-medium ${
+                  c.shared ? "text-(--c-t-2358d8) hover:bg-(--c-b-e7eefb)" : "text-(--c-t-8a8a8a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)"
+                }`}
+              >
+                {c.shared ? "Unshare" : "Share"}
               </button>
             )}
             {canDelete && (

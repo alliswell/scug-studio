@@ -4,7 +4,7 @@ import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { blockFields } from "./schema";
 import { reattachComments } from "./commentAnchors";
-import { deleteDocument, docBlocks, filesOf, releaseFiles, requireUser } from "./lib";
+import { blockView, contentSig, deleteDocument, docBlocks, filesOf, imagesOf, releaseFiles, requireUser } from "./lib";
 
 export const blocks = query({
   args: { documentId: v.id("documents") },
@@ -14,41 +14,92 @@ export const blocks = query({
   },
 });
 
-/** Applies the editor's changes: upserts by block key, deletes removed keys, frees unused files. */
+/**
+ * Applies the editor's changes: content upserts, pure reorders, and removals.
+ *
+ * Each CONTENT change carries the `rev` the editor last read for that line. A line whose rev has
+ * moved on belongs to someone else now, so it is handed back as a clash instead of being written
+ * over. Nothing here discards a line's words on the strength of an older read.
+ *
+ * Reorders come in separately, as `moves`, and carry no guard at all. They must not: a line that
+ * only shifted down because somebody typed above it says nothing about its words, and guarding it
+ * would turn every concurrent edit elsewhere in the document into a false clash — whose "keep
+ * mine" would then write stale text over the other person's work. Position is last-writer-wins by
+ * design; words are not.
+ */
 export const sync = mutation({
   args: {
     documentId: v.id("documents"),
-    upserts: v.array(v.object(blockFields)),
-    deletes: v.array(v.string()),
+    upserts: v.array(v.object({ ...blockFields, baseRev: v.optional(v.number()) })),
+    /** Lines whose words are unchanged and which have only shifted. Never clash. */
+    moves: v.optional(v.array(v.object({ key: v.string(), position: v.number() }))),
+    deletes: v.array(v.object({ key: v.string(), baseRev: v.optional(v.number()) })),
   },
-  handler: async (ctx, { documentId, upserts, deletes }) => {
+  handler: async (ctx, { documentId, upserts, moves, deletes }) => {
     await requireUser(ctx);
     const doc = await ctx.db.get(documentId);
     if (!doc) throw new ConvexError("Document not found");
+    // A document that is no longer the live one was swapped out under this editor (a restored
+    // version, or an agent rewrite). Writing into it would bury the text in an archived snapshot.
+    if (doc.kind !== "main" && doc.kind !== "tasks") throw new ConvexError("This version isn't the live document any more. Reload to carry on editing.");
     const dropped: Id<"_storage">[] = [];
+    const applied: { key: string; rev: number }[] = [];
+    const clashes: { key: string; reason: "changed" | "removed" | "kept"; theirs: ReturnType<typeof blockView> | null }[] = [];
+    let removed = 0;
     const byKey = async (key: string) =>
       ctx.db
         .query("blocks")
         .withIndex("by_document_key", (q) => q.eq("documentId", documentId).eq("key", key))
         .unique();
 
-    for (const b of upserts) {
+    for (const { baseRev, ...b } of upserts) {
       const existing = await byKey(b.key);
-      if (existing) {
-        const kept = new Set(filesOf(b));
-        for (const f of filesOf(existing)) if (!kept.has(f)) dropped.push(f);
-        // Fields a line can lose (back to the top level, unassigned) are cleared when they're not sent
-        await ctx.db.patch(existing._id, { ...b, indent: b.indent, assignee: b.assignee, attachments: undefined });
-      } else {
-        await ctx.db.insert("blocks", { ...b, documentId, projectId: doc.projectId });
+      if (!existing) {
+        // baseRev set means the editor had read this line, so its absence is someone else's delete.
+        // Re-inserting would quietly undo that, so hand it back instead.
+        if (baseRev !== undefined) {
+          clashes.push({ key: b.key, reason: "removed", theirs: null });
+          continue;
+        }
+        await ctx.db.insert("blocks", { ...b, documentId, projectId: doc.projectId, rev: 1 });
+        applied.push({ key: b.key, rev: 1 });
+        continue;
       }
+      const stored = existing.rev ?? 0;
+      if (baseRev !== undefined && stored !== baseRev && contentSig(existing) !== contentSig(b)) {
+        clashes.push({ key: b.key, reason: "changed", theirs: blockView(existing) });
+        continue;
+      }
+      // Only the pictures in an images block are the editor's to free: it never sends `attachments`
+      // or a block's own embedded comments, so an upsert carries no opinion about those and must
+      // not be read as "drop them". Clearing them here used to lose a file on an unrelated edit.
+      const kept = new Set(filesOf(b));
+      for (const f of imagesOf(existing)) if (!kept.has(f)) dropped.push(f);
+      await ctx.db.patch(existing._id, { ...b, indent: b.indent, assignee: b.assignee, rev: stored + 1 });
+      applied.push({ key: b.key, rev: stored + 1 });
     }
-    for (const key of deletes) {
+    for (const { key, position } of moves ?? []) {
       const existing = await byKey(key);
       if (!existing) continue;
+      if (existing.position !== position) await ctx.db.patch(existing._id, { position });
+    }
+    for (const { key, baseRev } of deletes) {
+      const existing = await byKey(key);
+      if (!existing) continue;
+      // Removing a line somebody has just rewritten would throw their work away without a word.
+      // Reported as "kept", not "changed", so the editor knows the line is still there and that
+      // choosing their version means putting it back rather than editing one it already has.
+      if (baseRev !== undefined && (existing.rev ?? 0) !== baseRev) {
+        clashes.push({ key, reason: "kept", theirs: blockView(existing) });
+        continue;
+      }
       dropped.push(...filesOf(existing));
       await ctx.db.delete(existing._id);
+      removed++;
     }
+    // Count a plain removal as work done: it has no `applied` entry and may free no files, and
+    // skipping the bookkeeping below leaves the Library pointing at a line that no longer exists.
+    if (!applied.length && !dropped.length && !removed && !(moves ?? []).length && clashes.length) return { applied, clashes };
     const now = Date.now();
     await ctx.db.patch(documentId, { updatedAt: now });
     await ctx.db.patch(doc.projectId, { updatedAt: now });
@@ -59,6 +110,7 @@ export const sync = mutation({
       .withIndex("by_project", (q) => q.eq("projectId", doc.projectId))
       .first();
     if (hasAssets) await queueAssetSync(ctx, doc.projectId);
+    return { applied, clashes };
   },
 });
 
@@ -139,7 +191,9 @@ export const promote = mutation({
       blocks.map((b) => ({ key: b.key, content: b.content })),
       taskKeys,
     );
-    for (const b of blocks) if (b.sourceBlockId) await ctx.db.patch(b._id, { sourceBlockId: null });
+    // sourceBlockId is part of a line's content signature, so clearing it has to move the rev too,
+    // or an editor still holding the old value would write it back as if nothing had changed.
+    for (const b of blocks) if (b.sourceBlockId) await ctx.db.patch(b._id, { sourceBlockId: null, rev: (b.rev ?? 0) + 1 });
     await ctx.db.patch(doc.projectId, { updatedAt: now });
   },
 });

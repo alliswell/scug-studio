@@ -236,7 +236,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "comment_on_project",
-    description: "Comment on a whole project, or on one line (by blockKey from get_project, or by part of the line's text with lineContains). Can attach images, renders, PDFs or any file: by link, inline base64, or an uploaded file (see get_upload_url). Shows with an Agent badge. Returns the comment id.",
+    description: "Comment on a whole project, or on one line (by blockKey from get_project, or by part of the line's text with lineContains). Can attach images, renders, PDFs or any file: by link, inline base64, or an uploaded file (see get_upload_url). Shows with an Agent badge. Comments are internal to the studio unless you pass shared: true, which puts it where anyone holding the project's share link can read it. Returns the comment id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -245,6 +245,7 @@ const TOOLS: Tool[] = [
         agentName: { type: "string" },
         blockKey: { type: "string" },
         lineContains: { type: "string" },
+        shared: { type: "boolean", description: "Put it in the thread anyone with the share link can read. Default false: the studio's own thread." },
         attachments: attachmentsArg,
       },
       required: ["project", "text"],

@@ -29,6 +29,10 @@ export type Comment = {
   agent: boolean;
   /** Written by the person viewing */
   mine: boolean;
+  /** Readable by anyone holding the share link. Off by default: comments are the studio's own. */
+  shared: boolean;
+  /** Written through the share link, by someone outside the studio */
+  guest: boolean;
   attachments: Attachment[];
   createdAt: number;
   /** Stable key on this device: a comment you just added keeps the key it had before the server saved it */
