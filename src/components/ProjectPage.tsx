@@ -121,13 +121,28 @@ export function ProjectPage({ id }: { id: string }) {
     if (!list || !pendingKey.current) return;
     store.setQuery(api.comments.list, { projectId: args.projectId }, [
       ...list,
-      { id: pendingKey.current as Id<"comments">, blockKey: args.blockKey, keyHistory: [], quote: null, text: "", authorName: null, agent: false, mine: true, attachments: [], createdAt: pendingAt.current },
+      {
+        id: pendingKey.current as Id<"comments">,
+        blockKey: args.blockKey,
+        keyHistory: [],
+        quote: null,
+        text: "",
+        authorName: null,
+        agent: false,
+        mine: true,
+        // Shows where it is going from the first keystroke, so the badge never appears late
+        shared: !!args.shared,
+        guest: false,
+        attachments: [],
+        createdAt: pendingAt.current,
+      },
     ]);
   });
   /** Saved comment id → the key it had while it was being added */
   const aliases = useRef(new Map<string, string>());
   const updateCommentM = useMutation(api.comments.update);
   const removeCommentM = useMutation(api.comments.remove);
+  const setSharedM = useMutation(api.comments.setShared);
   const moveCommentM = useMutation(api.comments.moveToLine);
   /** A comment being put onto a line: the next line clicked gets it */
   const [placing, setPlacing] = useState<string | null>(null);
@@ -299,7 +314,7 @@ export function ProjectPage({ id }: { id: string }) {
     });
 
   const actions: CommentActions = {
-    add: async (blockKey) => {
+    add: async (blockKey, shared) => {
       // Show and focus the box right away; it keeps its key once the server has it
       const temp = `pending-${uid()}`;
       pendingKey.current = temp;
@@ -309,6 +324,7 @@ export function ProjectPage({ id }: { id: string }) {
         projectId: id as Id<"projects">,
         blockKey,
         text: "",
+        shared,
       });
       pendingKey.current = null;
       aliases.current.set(cid, temp);
@@ -318,6 +334,7 @@ export function ProjectPage({ id }: { id: string }) {
     update: (cid, text) =>
       void (cid.startsWith("pending-") || updateCommentM({ id: cid as Id<"comments">, text })),
     remove: (cid) => void (cid.startsWith("pending-") || removeCommentM({ id: cid as Id<"comments"> })),
+    setShared: (cid, shared) => void (cid.startsWith("pending-") || setSharedM({ id: cid as Id<"comments">, shared })),
     addLink: (cid, url) =>
       void attachM({
         id: cid as Id<"comments">,

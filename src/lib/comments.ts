@@ -2,7 +2,7 @@ import type { Attachment, Block, Comment } from "./types";
 
 /** What the comments panel can do; the owner and share-link guests plug in different backends. */
 export type CommentActions = {
-  add: (blockKey: string | null) => Promise<string>;
+  add: (blockKey: string | null, shared?: boolean) => Promise<string>;
   update: (id: string, text: string) => void;
   remove: (id: string) => void;
   addLink: (id: string, url: string) => void;
@@ -11,6 +11,8 @@ export type CommentActions = {
   addFiles?: (id: string, files: File[]) => void;
   /** Add an existing file or link (e.g. from Mymind); team only */
   attach?: (id: string, attachment: Attachment) => void;
+  /** Move a comment in or out of the thread the share link can read; team only */
+  setShared?: (id: string, shared: boolean) => void;
 };
 
 export const snippet = (s: string) => (s.length > 90 ? `${s.slice(0, 90)}…` : s);

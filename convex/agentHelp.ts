@@ -230,7 +230,7 @@ link or an exact title)
 | list_versions {project} | Earlier versions of the document |
 | restore_version {project, versionId} | Bring an earlier version back |
 | suggest_project_edit {project, agentName?, lines} | Only if the user wants to approve changes first |
-| comment_on_project {project, text, agentName?, blockKey?, lineContains?, attachments?} | Comment on the project or a line, with images, PDFs or any files |
+| comment_on_project {project, text, agentName?, blockKey?, lineContains?, shared?, attachments?} | Comment on the project or a line, with images, PDFs or any files. Internal unless shared: true |
 | attach_files {comment, attachments} | Add files to an existing comment |
 | get_upload_url {} | One-time URL to upload a file from your computer (any size) |
 | move_comment {project, commentId, toKey? or lineContains?} | Put any comment on another line (or the whole project) |

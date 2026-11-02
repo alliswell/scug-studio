@@ -17,9 +17,20 @@ export type CommentView = {
   authorName: string | null;
   agent: boolean;
   mine: boolean;
+  /** Readable by anyone holding the share link */
+  shared: boolean;
+  /** Written through the share link rather than by the studio */
+  guest: boolean;
   attachments: Doc<"comments">["attachments"];
   createdAt: number;
 };
+
+/**
+ * What a share-link visitor is allowed to read: a comment they or another visitor wrote, or one
+ * the studio deliberately made visible. Everything else is the studio's own thread — a link handed
+ * to a GC or a landlord must not carry the notes the team wrote to each other.
+ */
+const visibleToGuests = (c: Doc<"comments">) => c.shared === true || c.guestToken !== null;
 
 function view(c: Doc<"comments">, mine: boolean): CommentView {
   return {
@@ -31,6 +42,8 @@ function view(c: Doc<"comments">, mine: boolean): CommentView {
     authorName: c.authorName,
     agent: c.agent,
     mine,
+    shared: visibleToGuests(c),
+    guest: c.guestToken !== null,
     attachments: c.attachments,
     createdAt: c.createdAt,
   };
@@ -81,6 +94,7 @@ async function insert(
     authorId: Id<"users"> | null;
     agent: boolean;
     guestToken: string | null;
+    shared?: boolean;
     attachments?: Doc<"comments">["attachments"];
   },
 ) {
@@ -94,6 +108,7 @@ async function insert(
     authorId: args.authorId,
     agent: args.agent,
     guestToken: args.guestToken,
+    ...(args.shared ? { shared: true } : {}),
     attachments: args.attachments ?? [],
     createdAt: now,
     updatedAt: now,
@@ -115,8 +130,8 @@ export const list = query({
 });
 
 export const add = mutation({
-  args: { projectId: v.id("projects"), blockKey: v.union(v.string(), v.null()), text: v.string() },
-  handler: async (ctx, { projectId, blockKey, text }) => {
+  args: { projectId: v.id("projects"), blockKey: v.union(v.string(), v.null()), text: v.string(), shared: v.optional(v.boolean()) },
+  handler: async (ctx, { projectId, blockKey, text, shared }) => {
     const userId = await requireUser(ctx);
     const user = await ctx.db.get(userId);
     return insert(ctx, {
@@ -127,7 +142,21 @@ export const add = mutation({
       authorId: userId,
       agent: false,
       guestToken: null,
+      shared,
     });
+  },
+});
+
+/** Show a comment to anyone holding the share link, or take it back into the studio's own thread. */
+export const setShared = mutation({
+  args: { id: v.id("comments"), shared: v.boolean() },
+  handler: async (ctx, { id, shared }) => {
+    await requireUser(ctx);
+    const c = await ctx.db.get(id);
+    if (!c) throw new ConvexError("That comment is gone.");
+    // A visitor's own comment is theirs; the studio cannot hide it from the link they wrote it on.
+    if (c.guestToken !== null) throw new ConvexError("That comment was written on the share link, so it stays on it.");
+    await ctx.db.patch(id, { shared, updatedAt: Date.now() });
   },
 });
 
@@ -205,7 +234,7 @@ export const listShared = query({
     const project = await projectBySlug(ctx, slug);
     if (!project) return [];
     const rows = await byProject(ctx, project._id);
-    return rows.map((c) => view(c, !!token && c.guestToken === token));
+    return rows.filter(visibleToGuests).map((c) => view(c, !!token && c.guestToken === token));
   },
 });
 
@@ -298,10 +327,12 @@ export const addAgent = internalMutation({
     agentName: v.optional(v.string()),
     blockKey: v.optional(v.string()),
     lineContains: v.optional(v.string()),
+    /** Show it to anyone holding the share link. Off by default, like a person's comment. */
+    shared: v.optional(v.boolean()),
     /** Links by URL, or files already stored (see agentFiles.ts) */
     attachments: v.optional(v.array(resolvedAttachment)),
   },
-  handler: async (ctx, { project: ref, text, agentName, blockKey, lineContains, attachments }) => {
+  handler: async (ctx, { project: ref, text, agentName, blockKey, lineContains, shared, attachments }) => {
     const projectId = ctx.db.normalizeId("projects", ref);
     const project = projectId ? await ctx.db.get(projectId) : await projectBySlug(ctx, ref.split("/").pop() ?? ref);
     if (!project) throw new ConvexError("Project not found. Pass its id or share link.");
@@ -336,6 +367,7 @@ export const addAgent = internalMutation({
       authorId: null,
       agent: true,
       guestToken: null,
+      shared,
       attachments: files,
     });
   },

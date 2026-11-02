@@ -231,6 +231,13 @@ export default defineSchema({
     agent: v.boolean(),
     /** Share-link commenters get a token so they can edit their own comments */
     guestToken: v.union(v.string(), v.null()),
+    /**
+     * Whether anyone holding the share link may read this. The studio's own thread is the default:
+     * a share link goes to a contractor, a vendor or a landlord, and internal notes are not theirs
+     * to read. A comment written THROUGH the link always counts as shared, whatever this says —
+     * see `visibleToGuests` in convex/comments.ts.
+     */
+    shared: v.optional(v.boolean()),
     attachments: v.array(attachment),
     createdAt: v.number(),
     updatedAt: v.number(),

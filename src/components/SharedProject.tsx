@@ -31,7 +31,11 @@ const PROJECT = "__project__";
  * Rather than quietly hiding some, the page says so plainly wherever comments are shown, so nobody
  * writes something here thinking a GC or a landlord won't see it.
  */
-const COMMENTS_ARE_PUBLIC = "Anyone with this link can read these comments, including the studio's own notes. Keep anything private off this thread.";
+/**
+ * What a visitor needs to know, now that the studio's own thread is no longer on the link: this is
+ * a shared conversation, not a private line to one person.
+ */
+const COMMENTS_ARE_SHARED = "Anyone with this link can read this thread, and so can the studio. Notes the studio keeps to itself are not shown here.";
 
 const noop = () => {};
 
@@ -342,7 +346,7 @@ export function SharedProject({ slug }: { slug: string }) {
               key={PROJECT}
               blockKey={null}
               title="Comments on this project"
-              notice={COMMENTS_ARE_PUBLIC}
+              notice={COMMENTS_ARE_SHARED}
               comments={projectComments}
               actions={actions}
               canWrite={!!actions}
@@ -355,7 +359,7 @@ export function SharedProject({ slug }: { slug: string }) {
               key={openKey}
               blockKey={openKey}
               title="Comments"
-              notice={COMMENTS_ARE_PUBLIC}
+              notice={COMMENTS_ARE_SHARED}
               quote={snippet(openBlock.content)}
               comments={allComments.filter((c) => c.blockKey === openKey)}
               actions={actions}
