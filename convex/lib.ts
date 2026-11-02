@@ -54,18 +54,18 @@ export function filesOf(b: Pick<Doc<"blocks">, "attachments" | "comments">): Id<
   return out;
 }
 
-/** Deletes stored files that no block or comment of this video uses anymore. */
-export async function releaseFiles(ctx: MutationCtx, videoId: Id<"videos">, candidates: Iterable<Id<"_storage">>) {
+/** Deletes stored files that no block or comment of this project uses anymore. */
+export async function releaseFiles(ctx: MutationCtx, projectId: Id<"projects">, candidates: Iterable<Id<"_storage">>) {
   const ids = new Set(candidates);
   if (!ids.size) return;
   const blocks = await ctx.db
     .query("blocks")
-    .withIndex("by_video", (q) => q.eq("videoId", videoId))
+    .withIndex("by_project", (q) => q.eq("projectId", projectId))
     .collect();
   for (const b of blocks) for (const f of filesOf(b)) ids.delete(f);
   const comments = await ctx.db
     .query("comments")
-    .withIndex("by_video", (q) => q.eq("videoId", videoId))
+    .withIndex("by_project", (q) => q.eq("projectId", projectId))
     .collect();
   for (const c of comments) for (const a of c.attachments) if (a.storageId) ids.delete(a.storageId);
   for (const id of ids) {
@@ -90,7 +90,7 @@ export async function deleteDocument(ctx: MutationCtx, documentId: Id<"documents
     await ctx.db.delete(b._id);
   }
   await ctx.db.delete(documentId);
-  await releaseFiles(ctx, doc.videoId, files);
+  await releaseFiles(ctx, doc.projectId, files);
 }
 
 type EditedBlock = {
@@ -107,12 +107,12 @@ type EditedBlock = {
 };
 
 /**
- * Saves someone's whole suggested copy of a script as an "Edited version" (one per token), so the
- * owner can review it in red and choose what to keep. Never touches the main script.
+ * Saves someone's whole suggested copy of a project document as an "Edited version" (one per token),
+ * so the owner can review it in red and choose what to keep. Never touches the main document.
  */
 export async function writeEditedVersion(
   ctx: MutationCtx,
-  videoId: Id<"videos">,
+  projectId: Id<"projects">,
   token: string,
   editorName: string,
   blocks: EditedBlock[],
@@ -123,7 +123,7 @@ export async function writeEditedVersion(
     .query("documents")
     .withIndex("by_token", (q) => q.eq("guestToken", token))
     .first();
-  if (doc && (doc.videoId !== videoId || doc.kind !== "edited")) doc = null;
+  if (doc && (doc.projectId !== projectId || doc.kind !== "edited")) doc = null;
 
   let documentId: Id<"documents">;
   const dropped: Id<"_storage">[] = [];
@@ -140,7 +140,7 @@ export async function writeEditedVersion(
     }
   } else {
     documentId = await ctx.db.insert("documents", {
-      videoId,
+      projectId,
       kind: "edited",
       editorName,
       guestToken: token,
@@ -151,7 +151,7 @@ export async function writeEditedVersion(
   for (const b of blocks) {
     await ctx.db.insert("blocks", {
       documentId,
-      videoId,
+      projectId,
       key: b.key.slice(0, 64),
       position: position++,
       type: b.type,
@@ -165,6 +165,6 @@ export async function writeEditedVersion(
       sourceBlockId: b.sourceBlockId,
     });
   }
-  await releaseFiles(ctx, videoId, dropped);
+  await releaseFiles(ctx, projectId, dropped);
   return documentId;
 }

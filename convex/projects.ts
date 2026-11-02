@@ -1,24 +1,79 @@
-import { v } from "convex/values";
-import { queueAssetSync } from "./library";
-import { mutation, query } from "./_generated/server";
-import { deleteDocument, newSlug, requireUser } from "./lib";
-import { captionPlatform, sponsorship, videoStatus as status } from "./schema";
+// Projects: a build-out or a piece of digital work, and everything hanging off it.
+// A project's `type` decides which pipeline it runs, and the pipeline decides which stages are legal.
 
-const format = v.union(v.literal("long"), v.literal("short"));
+import { ConvexError, v, type Infer } from "convex/values";
+import { queueAssetSync } from "./library";
+import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
+import { deleteDocument, newSlug, requireUser } from "./lib";
+import { digitalStage, physicalStage, projectStage, projectType } from "./schema";
+
+export type ProjectType = Infer<typeof projectType>;
+export type ProjectStage = Infer<typeof projectStage>;
+
+/**
+ * The two pipelines, in order, read straight off the schema's validators so the stage lists here
+ * and the ones the database accepts can never drift apart.
+ */
+export const PIPELINES: Record<ProjectType, ProjectStage[]> = {
+  physical: physicalStage.members.map((m) => m.value),
+  digital: digitalStage.members.map((m) => m.value),
+};
+
+/** The stage a new project of this type starts in. */
+export const firstStage = (type: ProjectType): ProjectStage => PIPELINES[type][0];
+
+/** The stage a project of this type ends in; everything before it is live work. */
+export const lastStage = (type: ProjectType): ProjectStage => PIPELINES[type][PIPELINES[type].length - 1];
+
+/**
+ * A stage only means something inside its own pipeline, and a Convex validator can't express that:
+ * `stage` is the union of both pipelines, so "install" passes validation on a digital project.
+ * The message names the legal stages because the MCP layer hands it to an agent verbatim.
+ */
+export function assertStage(type: ProjectType, stage: ProjectStage) {
+  if (PIPELINES[type].includes(stage)) return;
+  throw new ConvexError(`A ${type} project can't be in the "${stage}" stage. Legal stages for ${type}: ${PIPELINES[type].join(", ")}.`);
+}
+
+/** Unresolved marks across every review of this project. Read through by_project, never a table scan. */
+async function openMarkCount(ctx: QueryCtx, projectId: Id<"projects">) {
+  const reviews = await ctx.db
+    .query("reviews")
+    .withIndex("by_project", (q) => q.eq("projectId", projectId))
+    .collect();
+  let open = 0;
+  for (const r of reviews) {
+    const marks = await ctx.db
+      .query("reviewMarks")
+      .withIndex("by_review", (q) => q.eq("reviewId", r._id))
+      .collect();
+    open += marks.filter((m) => !m.resolved).length;
+  }
+  return open;
+}
 
 export const list = query({
   args: {},
   handler: async (ctx) => {
     await requireUser(ctx);
-    // Journal entries live in the Journal, not in the script views
-    const videos = (await ctx.db.query("videos").withIndex("by_updated").order("desc").collect()).filter((v) => !v.kind); // Journal entries and the Todo list have their own places
+    const projects = (await ctx.db.query("projects").withIndex("by_updated").order("desc").collect()).filter((p) => !p.kind); // Journal entries and the Todo list have their own places
+    const clubNames = new Map<Id<"clubs">, string | null>();
+    for (const id of new Set(projects.flatMap((p) => (p.clubId ? [p.clubId] : [])))) {
+      clubNames.set(id, (await ctx.db.get(id))?.name ?? null);
+    }
     return Promise.all(
-      videos.map(async (video) => {
+      projects.map(async (project) => {
         const edited = await ctx.db
           .query("documents")
-          .withIndex("by_video", (q) => q.eq("videoId", video._id).eq("kind", "edited"))
+          .withIndex("by_project", (q) => q.eq("projectId", project._id).eq("kind", "edited"))
           .collect();
-        return { ...video, editedCount: edited.length };
+        return {
+          ...project,
+          editedCount: edited.length,
+          clubName: project.clubId ? (clubNames.get(project.clubId) ?? null) : null,
+          openMarks: await openMarkCount(ctx, project._id),
+        };
       }),
     );
   },
@@ -28,83 +83,96 @@ export const get = query({
   args: { id: v.string() },
   handler: async (ctx, { id }) => {
     await requireUser(ctx);
-    const videoId = ctx.db.normalizeId("videos", id);
-    if (!videoId) return null;
-    const video = await ctx.db.get(videoId);
-    if (!video) return null;
+    const projectId = ctx.db.normalizeId("projects", id);
+    if (!projectId) return null;
+    const project = await ctx.db.get(projectId);
+    if (!project) return null;
     const documents = await ctx.db
       .query("documents")
-      .withIndex("by_video", (q) => q.eq("videoId", videoId))
+      .withIndex("by_project", (q) => q.eq("projectId", projectId))
       .collect();
     return {
-      video,
+      project,
       documents: documents.map((d) => ({
         _id: d._id,
         kind: d.kind,
         editorName: d.editorName,
         updatedAt: d.updatedAt,
       })),
+      club: project.clubId ? await ctx.db.get(project.clubId) : null,
     };
   },
 });
 
 export const create = mutation({
-  args: { format, status: v.optional(status), journal: v.optional(v.boolean()), title: v.optional(v.string()), liveDate: v.optional(v.union(v.string(), v.null())), sponsored: v.optional(sponsorship) },
-  handler: async (ctx, { format, status, journal, title, liveDate, sponsored }) => {
+  args: {
+    type: projectType,
+    stage: v.optional(projectStage),
+    clubId: v.optional(v.union(v.id("clubs"), v.null())),
+    journal: v.optional(v.boolean()),
+    title: v.optional(v.string()),
+    targetDate: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, { type, stage, clubId, journal, title, targetDate }) => {
     const userId = await requireUser(ctx);
     const now = Date.now();
-    if (liveDate && !/^\d{4}-\d{2}-\d{2}$/.test(liveDate)) throw new Error("Live date must be YYYY-MM-DD");
-    const videoId = await ctx.db.insert("videos", {
+    if (targetDate && !/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) throw new ConvexError("The target date must be YYYY-MM-DD");
+    if (stage) assertStage(type, stage);
+    const projectId = await ctx.db.insert("projects", {
       title: (title ?? "").slice(0, 500),
-      liveDate: liveDate ?? null,
-      status: status ?? "inProduction",
-      format,
-      sponsored: sponsored ?? "none",
+      clubId: clubId ?? null,
+      type,
+      stage: stage ?? firstStage(type),
+      targetDate: targetDate ?? null,
       shareSlug: newSlug(),
       editPasscode: null,
       createdBy: userId,
       updatedAt: now,
       ...(journal ? { kind: "journal" as const } : {}),
     });
-    for (const kind of ["main", "instructions"] as const) {
-      await ctx.db.insert("documents", { videoId, kind, editorName: null, guestToken: null, updatedAt: now });
+    for (const kind of ["main", "tasks"] as const) {
+      await ctx.db.insert("documents", { projectId, kind, editorName: null, guestToken: null, updatedAt: now });
     }
-    return videoId;
+    return projectId;
   },
 });
 
 export const update = mutation({
   args: {
-    id: v.id("videos"),
+    id: v.id("projects"),
     title: v.optional(v.string()),
-    liveDate: v.optional(v.union(v.string(), v.null())),
-    status: v.optional(status),
-    format: v.optional(format),
-    sponsored: v.optional(sponsorship),
-    captions: v.optional(v.array(captionPlatform)),
+    targetDate: v.optional(v.union(v.string(), v.null())),
+    stage: v.optional(projectStage),
+    type: v.optional(projectType),
+    clubId: v.optional(v.union(v.id("clubs"), v.null())),
     brief: v.optional(v.string()),
     briefLinks: v.optional(v.array(v.object({ id: v.string(), label: v.string(), url: v.string() }))),
     editPasscode: v.optional(v.union(v.string(), v.null())),
-    partnerId: v.optional(v.union(v.id("partners"), v.null())),
   },
   handler: async (ctx, { id, ...patch }) => {
     await requireUser(ctx);
+    const project = await ctx.db.get(id);
+    if (!project) throw new ConvexError("Project not found");
     if (patch.editPasscode !== undefined && patch.editPasscode !== null && patch.editPasscode.trim().length < 8) {
-      throw new Error("Passcode must be at least 8 characters");
+      throw new ConvexError("Passcode must be at least 8 characters");
     }
-    if (patch.captions && (patch.captions.length > 30 || patch.captions.some((c) => c.fields.length > 30 || c.caption.length > 20000)))
-      throw new Error("Too many captions or fields");
-    if (patch.brief && patch.brief.length > 50000) throw new Error("The brief can be at most 50,000 characters");
+    if (patch.targetDate && !/^\d{4}-\d{2}-\d{2}$/.test(patch.targetDate)) throw new ConvexError("The target date must be YYYY-MM-DD");
+    if (patch.brief && patch.brief.length > 50000) throw new ConvexError("The brief can be at most 50,000 characters");
     if (patch.briefLinks && (patch.briefLinks.length > 100 || patch.briefLinks.some((l) => !/^https?:\/\//i.test(l.url))))
-      throw new Error("Links must start with http:// or https://");
-    await ctx.db.patch(id, { ...patch, updatedAt: Date.now() });
+      throw new ConvexError("Links must start with http:// or https://");
+    // Switching pipelines strands the old stage, so the project starts the new pipeline over
+    // unless this same call says where it should land.
+    const type = patch.type ?? project.type;
+    const stage = patch.stage ?? (patch.type && patch.type !== project.type ? firstStage(patch.type) : project.stage);
+    assertStage(type, stage);
+    await ctx.db.patch(id, { ...patch, type, stage, updatedAt: Date.now() });
     if (patch.title !== undefined) await queueAssetSync(ctx, id);
   },
 });
 
-/** Pin a video to the top of the Scripts views, or unpin it. Doesn't count as an edit. */
+/** Pin a project to the top of the project views, or unpin it. Doesn't count as an edit. */
 export const setPinned = mutation({
-  args: { id: v.id("videos"), pinned: v.boolean() },
+  args: { id: v.id("projects"), pinned: v.boolean() },
   handler: async (ctx, { id, pinned }) => {
     await requireUser(ctx);
     await ctx.db.patch(id, { pinnedAt: pinned ? Date.now() : null });
@@ -112,25 +180,50 @@ export const setPinned = mutation({
 });
 
 export const resetShareLink = mutation({
-  args: { id: v.id("videos") },
+  args: { id: v.id("projects") },
   handler: async (ctx, { id }) => {
     await requireUser(ctx);
     await ctx.db.patch(id, { shareSlug: newSlug() });
   },
 });
 
+/** Deletes a review and everything under it, including every blob on its rounds and its marks. */
+async function deleteReview(ctx: MutationCtx, reviewId: Id<"reviews">) {
+  const drop = async (storageId: Id<"_storage"> | undefined) => {
+    if (storageId) await ctx.storage.delete(storageId).catch(() => {});
+  };
+  const rounds = await ctx.db
+    .query("reviewRounds")
+    .withIndex("by_review", (q) => q.eq("reviewId", reviewId))
+    .collect();
+  for (const r of rounds) {
+    for (const f of r.files) await drop(f.storageId);
+    await ctx.db.delete(r._id);
+  }
+  const marks = await ctx.db
+    .query("reviewMarks")
+    .withIndex("by_review", (q) => q.eq("reviewId", reviewId))
+    .collect();
+  for (const m of marks) {
+    // A mark can carry its own sheets or photos; the old code left those behind
+    for (const a of m.attachments ?? []) await drop(a.storageId);
+    await ctx.db.delete(m._id);
+  }
+  await ctx.db.delete(reviewId);
+}
+
 export const remove = mutation({
-  args: { id: v.id("videos") },
+  args: { id: v.id("projects") },
   handler: async (ctx, { id }) => {
     await requireUser(ctx);
     const docs = await ctx.db
       .query("documents")
-      .withIndex("by_video", (q) => q.eq("videoId", id))
+      .withIndex("by_project", (q) => q.eq("projectId", id))
       .collect();
     for (const d of docs) await deleteDocument(ctx, d._id);
     const comments = await ctx.db
       .query("comments")
-      .withIndex("by_video", (q) => q.eq("videoId", id))
+      .withIndex("by_project", (q) => q.eq("projectId", id))
       .collect();
     for (const c of comments) {
       for (const a of c.attachments) if (a.storageId) await ctx.storage.delete(a.storageId).catch(() => {});
@@ -138,9 +231,14 @@ export const remove = mutation({
     }
     const updates = await ctx.db
       .query("updates")
-      .withIndex("by_video", (q) => q.eq("videoId", id))
+      .withIndex("by_project", (q) => q.eq("projectId", id))
       .collect();
     for (const u of updates) await ctx.db.delete(u._id);
+    const reviews = await ctx.db
+      .query("reviews")
+      .withIndex("by_project", (q) => q.eq("projectId", id))
+      .collect();
+    for (const r of reviews) await deleteReview(ctx, r._id);
     await ctx.db.delete(id);
     await queueAssetSync(ctx, id);
   },
@@ -151,12 +249,12 @@ export const journal = query({
   args: {},
   handler: async (ctx) => {
     await requireUser(ctx);
-    const rows = (await ctx.db.query("videos").withIndex("by_updated").order("desc").collect()).filter((v) => v.kind === "journal");
+    const rows = (await ctx.db.query("projects").withIndex("by_updated").order("desc").collect()).filter((p) => p.kind === "journal");
     return Promise.all(
-      rows.map(async (v) => {
+      rows.map(async (p) => {
         const main = await ctx.db
           .query("documents")
-          .withIndex("by_video", (q) => q.eq("videoId", v._id).eq("kind", "main"))
+          .withIndex("by_project", (q) => q.eq("projectId", p._id).eq("kind", "main"))
           .first();
         const blocks = main
           ? await ctx.db
@@ -170,28 +268,34 @@ export const journal = query({
           .filter(Boolean)
           .join(" ")
           .slice(0, 220);
-        return { id: v._id, title: v.title, preview, createdAt: v._creationTime, updatedAt: v.updatedAt, pinnedAt: v.pinnedAt ?? null };
+        return { id: p._id, title: p.title, preview, createdAt: p._creationTime, updatedAt: p.updatedAt, pinnedAt: p.pinnedAt ?? null };
       }),
     );
   },
 });
 
 /**
- * Kanban: a column's cards in the order they were dragged into (top to bottom). Moves the dropped card to that
+ * Board: a column's cards in the order they were dragged into (top to bottom). Moves the dropped card to that
  * column too. Doesn't touch "last edited", so other views keep their order.
+ *
+ * The column is a bare stage, so a card dragged across pipelines would otherwise land in a stage its
+ * own type has never heard of. assertStage is what stops that.
  */
 export const reorder = mutation({
-  args: { status, ids: v.array(v.id("videos")), moved: v.optional(v.id("videos")) },
-  handler: async (ctx, { status: st, ids, moved }) => {
+  args: { stage: projectStage, ids: v.array(v.id("projects")), moved: v.optional(v.id("projects")) },
+  handler: async (ctx, { stage, ids, moved }) => {
     await requireUser(ctx);
-    if (ids.length > 2000) throw new Error("Too many cards");
+    if (ids.length > 2000) throw new ConvexError("Too many cards");
     for (const [i, id] of ids.entries()) {
-      const vid = await ctx.db.get(id);
-      if (!vid) continue;
-      const patch: { kanbanOrder?: number; status?: typeof st; updatedAt?: number } = {};
-      if (vid.kanbanOrder !== i) patch.kanbanOrder = i;
+      const project = await ctx.db.get(id);
+      if (!project) continue;
+      const patch: { boardOrder?: number; stage?: ProjectStage; updatedAt?: number } = {};
+      if (project.boardOrder !== i) patch.boardOrder = i;
       // Changing column is a real change; just reordering isn't
-      if (id === moved && vid.status !== st) Object.assign(patch, { status: st, updatedAt: Date.now() });
+      if (id === moved && project.stage !== stage) {
+        assertStage(project.type, stage);
+        Object.assign(patch, { stage, updatedAt: Date.now() });
+      }
       if (Object.keys(patch).length) await ctx.db.patch(id, patch);
     }
   },
