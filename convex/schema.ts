@@ -203,6 +203,14 @@ export default defineSchema({
     documentId: v.id("documents"),
     projectId: v.id("projects"),
     ...blockFields,
+    /**
+     * Bumped whenever a line's CONTENT changes — not when it only moves. The editor sends back the
+     * rev it last saw, and `docs.sync` refuses to overwrite a line whose rev has moved on. Without
+     * it the last save simply won, line by line, and the other person's words were gone with no
+     * trace. Moving a line deliberately does not bump it: inserting one line at the top renumbers
+     * every line below, and those must not all read as conflicts.
+     */
+    rev: v.optional(v.number()),
   })
     .index("by_document", ["documentId", "position"])
     .index("by_document_key", ["documentId", "key"])

@@ -13,7 +13,7 @@ import {
   type CommentActions,
 } from "@/lib/comments";
 import { readText, setCaret } from "@/lib/caret";
-import { useDocSync, useLoadBlocks, type SaveState } from "@/lib/sync";
+import { fromServer, useDocSync, useLoadBlocks, type Clash, type SaveState, type ServerBlock } from "@/lib/sync";
 import {
   reviewStatusOf,
   stageOf,
@@ -218,29 +218,40 @@ export function ProjectPage({ id }: { id: string }) {
       });
   }, [data?.project, meta]);
 
-  // Load blocks when we first see the documents, and again if the main document is replaced
+  // The document is read live, not once. The first read seeds the editor; every read after it is
+  // merged in, so a teammate's lines turn up while you are working instead of only on reload.
+  const mainRows = useQuery(api.docs.blocks, serverMain ? { documentId: serverMain as Id<"documents"> } : "skip") as ServerBlock[] | undefined;
+  const taskRows = useQuery(api.docs.blocks, serverTasks ? { documentId: serverTasks as Id<"documents"> } : "skip") as ServerBlock[] | undefined;
+
   useEffect(() => {
-    if (!serverMain || serverMain === mainId) return;
-    void loadBlocks(serverMain).then((b) => {
-      mainSync.seed(serverMain, b);
+    if (!serverMain || !mainRows) return;
+    if (serverMain !== mainId) {
+      mainSync.seed(serverMain, mainRows.map(fromServer), new Map(mainRows.map((r) => [r.id, r.rev])));
       // The Todo list is all checkboxes (lines written as bullets or text become to-dos; this saves)
-      const list = b.length ? b : [emptyBlock()];
+      const list = mainRows.length ? mainRows.map(fromServer) : [emptyBlock()];
       setMainBlocks(todoRef.current ? list.map((x) => (x.type === "bullet" || x.type === "number" || x.type === "p" ? { ...x, type: "todo" as const } : x)) : list);
       setMainId(serverMain);
       setVersion(null);
       setOpenId(null);
-    });
+      return;
+    }
+    const merged = mainSync.mergeServer(mainRows);
+    if (merged) setMainBlocks(merged.length ? merged : [emptyBlock()]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverMain]);
+  }, [serverMain, mainRows, mainId]);
+
   useEffect(() => {
-    if (!serverTasks || serverTasks === tasksId) return;
-    void loadBlocks(serverTasks).then((b) => {
-      tasksSync.seed(serverTasks, b);
-      setTaskBlocks(b.length ? b : [{ ...emptyBlock(), type: "todo" }]);
+    if (!serverTasks || !taskRows) return;
+    if (serverTasks !== tasksId) {
+      tasksSync.seed(serverTasks, taskRows.map(fromServer), new Map(taskRows.map((r) => [r.id, r.rev])));
+      setTaskBlocks(taskRows.length ? taskRows.map(fromServer) : [{ ...emptyBlock(), type: "todo" }]);
       setTasksId(serverTasks);
-    });
+      return;
+    }
+    const merged = tasksSync.mergeServer(taskRows);
+    if (merged) setTaskBlocks(merged.length ? merged : [{ ...emptyBlock(), type: "todo" }]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverTasks]);
+  }, [serverTasks, taskRows, tasksId]);
 
   useEffect(() => {
     const busy = Object.values(uploading).some((list) =>
@@ -534,6 +545,20 @@ export function ProjectPage({ id }: { id: string }) {
   const archived = docs
     .filter((d) => d.kind === "archived")
     .sort((a, b) => b.updatedAt - a.updatedAt);
+  // Lines this person and somebody else both changed. Ours stayed in the document and theirs was
+  // refused by the server, so the words still exist on both sides and the choice is made here.
+  const allClashes = [
+    ...mainSync.clashes.map((c) => ({ c, where: "main" as const })),
+    ...tasksSync.clashes.map((c) => ({ c, where: "tasks" as const })),
+  ];
+  const resolveClash = (key: string, where: "main" | "tasks", winner: "mine" | "theirs") => {
+    const sync = where === "main" ? mainSync : tasksSync;
+    const set = where === "main" ? setMainBlocks : setTaskBlocks;
+    const theirs = sync.resolve(key, winner);
+    if (winner !== "theirs") return;
+    set((prev) => (!prev ? prev : theirs ? prev.map((b) => (b.id === key ? theirs : b)) : prev.filter((b) => b.id !== key)));
+  };
+
   const states = [mainSync.state, tasksSync.state, metaState];
   const saveLabel = states.includes("error")
     ? "Offline, retrying…"
@@ -956,6 +981,8 @@ export function ProjectPage({ id }: { id: string }) {
               ?.focus()
           }
         />
+        {/* Above the tabs on purpose: a line someone else changed matters whichever tab you are on */}
+        <ClashBar clashes={allClashes} onResolve={resolveClash} />
         {/* Journal entries and the Todo list are just the writing: no tabs, no details */}
         {journal || todo ? (
           mainDoc
@@ -1190,5 +1217,58 @@ function PresentIcon() {
       <rect x="2.5" y="3.5" width="15" height="10" rx="2" />
       <path d="M8.5 6.6v4.3l3.6-2.15-3.6-2.15ZM7 16.5h6M10 13.5v3" />
     </svg>
+  );
+}
+
+/**
+ * Lines this person and somebody else both changed at once.
+ *
+ * Theirs never landed on top of yours — the server refused the write — so both versions still
+ * exist and this is where you pick. It sits above the tabs because a line going stale matters
+ * whichever tab you happen to be on. The wording carries the meaning on its own; the colour only
+ * repeats it.
+ */
+function ClashBar({
+  clashes,
+  onResolve,
+}: {
+  clashes: { c: Clash; where: "main" | "tasks" }[];
+  onResolve: (key: string, where: "main" | "tasks", winner: "mine" | "theirs") => void;
+}) {
+  if (!clashes.length) return null;
+  const btn =
+    "inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[12.5px] font-medium ring-1 ring-(--c-l-e3e3e0) text-(--c-t-4a4a4a) hover:text-(--c-t-1b1b1b) hover:ring-(--c-l-c9c9c6)";
+  return (
+    <div role="status" className="mt-4 rounded-lg bg-(--c-b-fef6f5) px-3.5 py-3 ring-1 ring-(--c-l-f6d5d1)">
+      <p className="m-0 text-[13.5px] font-semibold text-(--c-t-b42318)">
+        {clashes.length === 1 ? "Someone else changed a line you were editing" : `Someone else changed ${clashes.length} lines you were editing`}
+      </p>
+      <p className="m-0 mt-0.5 text-[12.5px] text-(--c-t-6b6b6b)">
+        Yours is what you see in the document. Nothing was overwritten — pick which version to keep.
+      </p>
+      <ul className="m-0 mt-2.5 list-none space-y-1.5 p-0">
+        {clashes.map(({ c, where }) => (
+          <li key={`${where}:${c.key}`} className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-[13px] text-(--c-t-4a4a4a)">
+              {c.theirs ? (
+                <>
+                  <span className="text-(--c-t-8a8a8a)">Theirs: </span>
+                  {c.theirs.content.trim() || "(blank line)"}
+                </>
+              ) : (
+                "They deleted this line"
+              )}
+              {where === "tasks" && <span className="text-(--c-t-8a8a8a)"> · on the task list</span>}
+            </span>
+            <button type="button" className={btn} onClick={() => onResolve(c.key, where, "theirs")}>
+              {c.theirs ? "Use theirs" : "Delete it"}
+            </button>
+            <button type="button" className={btn} onClick={() => onResolve(c.key, where, "mine")}>
+              Keep mine
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

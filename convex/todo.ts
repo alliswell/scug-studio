@@ -141,6 +141,8 @@ export const setItem = mutation({
     await ctx.db.patch(block._id, {
       ...(checked !== undefined ? { checked, type: "todo" as const } : {}),
       ...(assignee !== undefined ? { assignee: assignee ?? undefined } : {}),
+      // Bump the rev so an open editor sees this as someone else's change rather than writing over it
+      rev: (block.rev ?? 0) + 1,
     });
     const now = Date.now();
     await ctx.db.patch(main._id, { updatedAt: now });

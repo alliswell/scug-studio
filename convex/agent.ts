@@ -430,6 +430,8 @@ export const updateTask = internalMutation({
     await ctx.db.patch(block._id, {
       ...(text !== undefined ? { content: text.slice(0, MAX_TEXT) } : {}),
       ...(checked !== undefined ? { checked } : {}),
+      // Bump the rev so an open editor sees this as someone else's change rather than writing over it
+      rev: (block.rev ?? 0) + 1,
     });
     await ctx.db.patch(p._id, { updatedAt: Date.now() });
     return { key };
@@ -1059,6 +1061,8 @@ export const updateTodoItem = internalMutation({
       patch.content = text;
     }
     if (assignee !== undefined) patch.assignee = assignee ? personOf(await teamOf(ctx), assignee) : undefined;
+    // Bump the rev so an open editor sees this as someone else's change rather than writing over it
+    patch.rev = (block.rev ?? 0) + 1;
     await ctx.db.patch(block._id, patch);
     const now = Date.now();
     await ctx.db.patch(main!._id, { updatedAt: now });
