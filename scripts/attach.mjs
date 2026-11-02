@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// Attach files from this computer to Native Note comments, no browser and no API key needed
+// Attach files from this computer to Switchyards Studio comments, no browser and no API key needed
 // (it runs the backend functions directly with this repo's Convex access).
 //
-//   node scripts/attach.mjs --script <id or share link> [--line "part of a line"] [--text "comment"] file ...
-//       posts a new agent comment (on that line, or the whole script) with the files attached
+//   node scripts/attach.mjs --project <id or share link> [--line "part of a line"] [--text "comment"] file ...
+//       posts a new agent comment (on that line, or the whole project) with the files attached
 //   node scripts/attach.mjs --comment <comment id> file ...
 //       adds the files to an existing comment
 //
 // Options: --agent <name> (default Claude), --dev (use the dev deployment instead of production).
-// Any file type and size: each file is uploaded straight to Native Note's storage.
+// Any file type and size: each file is uploaded straight to this app's storage.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -30,8 +30,8 @@ for (let i = 0; i < args.length; i++) {
   else if (a.startsWith("--")) opts[a.slice(2)] = args[++i];
   else files.push(a);
 }
-if (!files.length || (!opts.script && !opts.comment)) {
-  console.error('Usage: node scripts/attach.mjs (--script <id|link> [--line "..."] [--text "..."] | --comment <id>) file ...');
+if (!files.length || (!opts.project && !opts.comment)) {
+  console.error('Usage: node scripts/attach.mjs (--project <id|link> [--line "..."] [--text "..."] | --comment <id>) file ...');
   process.exit(1);
 }
 
@@ -62,7 +62,7 @@ if (opts.comment) {
   console.log(JSON.stringify(run("agentFiles:attach", { comment: opts.comment, attachments }), null, 2));
 } else {
   const id = run("comments:addAgent", {
-    script: opts.script,
+    project: opts.project,
     text: opts.text ?? "",
     agentName: opts.agent,
     lineContains: opts.line,
