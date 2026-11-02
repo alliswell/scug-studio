@@ -122,6 +122,18 @@ export const markRect = v.object({ x: v.number(), y: v.number(), w: v.number(), 
  */
 export const markKind = v.union(v.literal("fix"), v.literal("question"), v.literal("note"), v.literal("approve"));
 
+/** What kind of thing a piece of FF&E is. Shown with its own glyph, never by colour alone. */
+export const ffeCategory = v.union(
+  v.literal("seating"),
+  v.literal("tables"),
+  v.literal("lighting"),
+  v.literal("soft"),
+  v.literal("storage"),
+  v.literal("fixtures"),
+  v.literal("equipment"),
+  v.literal("art"),
+);
+
 export default defineSchema({
   ...authTables,
 
@@ -340,6 +352,63 @@ export default defineSchema({
     resolvedByRound: v.optional(v.union(v.number(), v.null())),
     createdAt: v.number(),
   }).index("by_review", ["reviewId", "roundNumber"]),
+
+  /**
+   * FF&E. A product is specified ONCE and placed in as many clubs as it goes in — the whole point
+   * of a network is that the same chair turns up in twelve of them, and typing it out again each
+   * time loses the one question worth asking: what do we use, and where is it.
+   *
+   * This is a specification tool, not a procurement one. There is deliberately no cost, no lead
+   * time, no order status and no PO here: that is somebody else's system, and half-keeping it
+   * would be worse than not keeping it.
+   */
+  ffeProducts: defineTable({
+    /** What it is, as the maker names it: "About A Chair AAC22" */
+    name: v.string(),
+    /** Who makes it. Part of the name — "AAC22" alone means nothing. */
+    maker: v.optional(v.string()),
+    /** "Grey felt, oak base" */
+    finish: v.optional(v.string()),
+    category: v.optional(ffeCategory),
+    /** Free text: "W62 × D55 × H79 cm" */
+    dimensions: v.optional(v.string()),
+    /** The product page, for when someone needs to look it up */
+    url: v.optional(v.union(v.string(), v.null())),
+    imageUrl: v.optional(v.union(v.string(), v.null())),
+    imageStorageId: v.optional(v.union(v.id("_storage"), v.null())),
+    notes: v.optional(v.string()),
+    /** Lower-cased name + maker + finish + notes, for search */
+    searchText: v.string(),
+    createdBy: v.union(v.id("users"), v.null()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_name", ["name"])
+    .index("by_category", ["category"])
+    .searchIndex("search", { searchField: "searchText" }),
+
+  /**
+   * One product, in one area of one club, in some number.
+   *
+   * The club owns it and the project only specs it: a build-out buys most of what is in a room,
+   * but a chair replaced two years after opening belongs to the club with no project at all.
+   */
+  ffePlacements: defineTable({
+    productId: v.id("ffeProducts"),
+    clubId: v.id("clubs"),
+    /** The build-out that specified it; null for anything added after opening */
+    projectId: v.optional(v.union(v.id("projects"), v.null())),
+    /** Where in the club: "Lounge", "Phone rooms", "Cafe". Free text, so the vocabulary is yours. */
+    area: v.string(),
+    quantity: v.number(),
+    notes: v.optional(v.string()),
+    createdBy: v.union(v.id("users"), v.null()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_club", ["clubId"])
+    .index("by_project", ["projectId"])
+    .index("by_product", ["productId"]),
 
   // PDFs: drawing sets, permit sets, vendor cutsheets and papers to read, mark up and talk about
   pdfs: defineTable({

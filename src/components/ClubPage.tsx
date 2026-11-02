@@ -4,14 +4,15 @@ import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { useDocumentTitle } from "@/lib/useDocumentTitle";
-import { CLUB_STATUSES, PROJECT_TYPES, reviewStatusOf, stagesFor, type ClubStatus, type ProjectType } from "@/lib/types";
+import { CLUB_STATUSES, PROJECT_TYPES, productLabel, reviewStatusOf, stagesFor, type ClubStatus, type FfeCategory, type ProjectType } from "@/lib/types";
 import { ShowSidebarButton, useGoBack, useMaybeAppSidebar } from "./HomeSidebar";
 import { IconArrowLeft, IconPlus, IconTrash } from "./icons";
 import { ClubStatusMark, clubDate } from "./ClubsList";
+import { AddPlacement, ProductThumb, groupByArea } from "./FfePicker";
 
 type ProjectRow = {
   id: Id<"projects">;
@@ -307,10 +308,204 @@ export function ClubPage({ id }: { id: string }) {
           </>
         )}
 
+        <ClubFfe clubId={club._id} clubName={club.name} />
+
         <Section title="Notes" />
         <Notes value={club.notes ?? ""} onSave={(notes) => save({ notes })} />
       </main>
     </div>
+  );
+}
+
+/** A row of `api.ffe.placements`, as far as this page reads it. */
+type ClubPlacement = {
+  _id: Id<"ffePlacements">;
+  area: string;
+  quantity: number;
+  projectId?: Id<"projects"> | null;
+  projectTitle: string | null;
+  product: {
+    _id: Id<"ffeProducts">;
+    name: string;
+    maker: string | null;
+    finish: string | null;
+    category: FfeCategory | null;
+    imageUrl: string | null;
+  };
+};
+
+/**
+ * What is in this club, area by area. The club owns every piece of it: most of it was specced by a
+ * build-out, and a chair replaced two years after opening has no project at all.
+ */
+function ClubFfe({ clubId, clubName }: { clubId: Id<"clubs">; clubName: string }) {
+  const rows: ClubPlacement[] | undefined = useQuery(api.ffe.placements, { clubId });
+  const areas: string[] | undefined = useQuery(api.ffe.areas, {});
+  const update = useMutation(api.ffe.updatePlacement);
+  const remove = useMutation(api.ffe.removePlacement);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const areaList = useId();
+
+  const list = rows ?? [];
+  const groups = groupByArea(list);
+  const pieces = list.reduce((n, r) => n + r.quantity, 0);
+
+  const patch = (id: Id<"ffePlacements">, change: { area?: string; quantity?: number }) =>
+    void (async () => {
+      try {
+        setError(null);
+        await update({ id, ...change });
+      } catch (e) {
+        setError(errorText(e, "Couldn't save that"));
+      }
+    })();
+
+  return (
+    <>
+      {/* The count is pieces, not rows: forty of the same chair is the number anyone wants */}
+      <Section title="FF&E" count={rows === undefined ? undefined : pieces}>
+        {rows !== undefined && list.length > 0 && !adding && (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium text-(--c-t-6b6b6b) ring-1 ring-(--c-l-e3e3e0) hover:text-(--c-t-1b1b1b)"
+          >
+            <IconPlus size={13} />
+            Place a product
+          </button>
+        )}
+      </Section>
+
+      {adding && (
+        <div className="mb-4">
+          <AddPlacement clubId={clubId} onCancel={() => setAdding(false)} autoFocus />
+        </div>
+      )}
+
+      {error && (
+        <p role="alert" className="m-0 mb-2 text-[12.5px] text-(--c-t-b42318)">
+          {error}
+        </p>
+      )}
+
+      {rows === undefined ? (
+        <div className="h-10" />
+      ) : list.length === 0 ? (
+        !adding && (
+          <div className="rounded-xl border border-dashed border-(--c-l-dcdcdc) px-5 py-10 text-center">
+            <p className="m-0 text-[14px] text-(--c-t-737373)">Nothing is specced into {clubName} yet.</p>
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="mt-3 inline-flex h-9 items-center rounded-lg bg-(--c-b-1b1b1b) px-3.5 text-[13.5px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333)"
+            >
+              Place the first product
+            </button>
+          </div>
+        )
+      ) : (
+        <div className="flex flex-col gap-5">
+          <datalist id={areaList}>
+            {(areas ?? []).map((a) => (
+              <option key={a} value={a} />
+            ))}
+          </datalist>
+          {groups.map((g) => (
+            <div key={g.area}>
+              <div className="mb-1 flex items-center gap-2 text-[12px] font-medium uppercase tracking-[0.05em] text-(--c-t-9a9a9a)">
+                <span className="text-(--c-t-4a4a4a)">{g.area}</span>
+                <span className="tabular-nums">{g.total}</span>
+              </div>
+              <ul className="m-0 flex list-none flex-col p-0">
+                {g.rows.map((r) => (
+                  <li key={r._id} className="flex items-center gap-2.5 border-b border-(--c-l-f0f0f0) py-2 last:border-0">
+                    <ProductThumb imageUrl={r.product.imageUrl} category={r.product.category} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[14px] text-(--c-t-1b1b1b)">
+                        {productLabel(r.product)}
+                        {r.product.finish && <span className="text-(--c-t-8a8a8a)"> · {r.product.finish}</span>}
+                      </div>
+                      {/* The project only specced it; the club owns it, so there is often none */}
+                      {r.projectId && r.projectTitle && (
+                        <Link href={`/p/${r.projectId}`} className="block truncate text-[12.5px] text-(--c-t-8a8a8a) no-underline hover:underline">
+                          Specced by {r.projectTitle}
+                        </Link>
+                      )}
+                    </div>
+                    <PlacementArea value={r.area} listId={areaList} onSave={(area) => patch(r._id, { area })} />
+                    <PlacementQuantity value={r.quantity} onSave={(quantity) => patch(r._id, { quantity })} />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!confirm(`Remove ${productLabel(r.product)} from ${r.area}?`)) return;
+                        void (async () => {
+                          try {
+                            setError(null);
+                            await remove({ id: r._id });
+                          } catch (e) {
+                            setError(errorText(e, "Couldn't remove that"));
+                          }
+                        })();
+                      }}
+                      aria-label={`Remove ${productLabel(r.product)}`}
+                      title="Remove from this club"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-(--c-t-9a9a9a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-b42318)"
+                    >
+                      <IconTrash size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** The area a piece sits in, edited where it is shown. Typing another one moves the row there. */
+function PlacementArea({ value, listId, onSave }: { value: string; listId: string; onSave: (v: string) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <input
+      value={draft ?? value}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        // A blank area is no area at all, so it reverts rather than being refused
+        if (draft !== null && draft.trim() && draft.trim() !== value) onSave(draft.trim());
+        setDraft(null);
+      }}
+      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+      list={listId}
+      aria-label="Area"
+      className="h-8 w-[112px] shrink-0 rounded-md bg-transparent px-1.5 text-[13px] text-(--c-t-6b6b6b) outline-none hover:bg-(--c-b-f4f4f4) focus:bg-(--c-b-f4f4f4)"
+    />
+  );
+}
+
+/** How many of it. A placement without a number says nothing, so anything but a whole 1-or-more reverts. */
+function PlacementQuantity({ value, onSave }: { value: number; onSave: (v: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <input
+      type="number"
+      min={1}
+      step={1}
+      value={draft ?? String(value)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft !== null) {
+          const next = Number(draft);
+          if (Number.isInteger(next) && next >= 1 && next !== value) onSave(next);
+        }
+        setDraft(null);
+      }}
+      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+      aria-label="Quantity"
+      className="h-8 w-[68px] shrink-0 rounded-md bg-transparent px-1.5 text-right text-[13px] tabular-nums text-(--c-t-1b1b1b) outline-none hover:bg-(--c-b-f4f4f4) focus:bg-(--c-b-f4f4f4)"
+    />
   );
 }
 

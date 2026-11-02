@@ -42,6 +42,13 @@ import {
   httpReviewStatus,
   httpApproveReview,
   httpPinProject,
+  httpListFfeProducts,
+  httpGetFfeProduct,
+  httpAddFfeProduct,
+  httpUpdateFfeProduct,
+  httpPlaceFfe,
+  httpListFfe,
+  httpRemoveFfePlacement,
   httpAttach,
   httpFile,
   httpUploadUrl,
@@ -94,6 +101,13 @@ http.route({ path: "/agent/review/mark", method: "POST", handler: httpMarkReview
 http.route({ path: "/agent/review/mark/resolve", method: "POST", handler: httpResolveMark });
 http.route({ path: "/agent/review/status", method: "POST", handler: httpReviewStatus });
 http.route({ path: "/agent/review/approve", method: "POST", handler: httpApproveReview });
+http.route({ path: "/agent/ffe/products", method: "GET", handler: httpListFfeProducts });
+http.route({ path: "/agent/ffe/product", method: "GET", handler: httpGetFfeProduct });
+http.route({ path: "/agent/ffe/products", method: "POST", handler: httpAddFfeProduct });
+http.route({ path: "/agent/ffe/product", method: "POST", handler: httpUpdateFfeProduct });
+http.route({ path: "/agent/ffe", method: "GET", handler: httpListFfe });
+http.route({ path: "/agent/ffe/place", method: "POST", handler: httpPlaceFfe });
+http.route({ path: "/agent/ffe/remove", method: "POST", handler: httpRemoveFfePlacement });
 http.route({ path: "/agent/boards", method: "GET", handler: httpListBoards });
 http.route({ path: "/agent/board", method: "GET", handler: httpGetBoard });
 http.route({ path: "/agent/board/create", method: "POST", handler: httpCreateBoard });

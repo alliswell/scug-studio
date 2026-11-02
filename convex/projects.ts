@@ -239,6 +239,14 @@ export const remove = mutation({
       .withIndex("by_project", (q) => q.eq("projectId", id))
       .collect();
     for (const r of reviews) await deleteReview(ctx, r._id);
+    // The club owns its furniture, so a placement outlives the build-out that specced it: only the
+    // project it points at goes, which is the same state as anything added after opening.
+    const placements = await ctx.db
+      .query("ffePlacements")
+      .withIndex("by_project", (q) => q.eq("projectId", id))
+      .collect();
+    const now = Date.now();
+    for (const p of placements) await ctx.db.patch(p._id, { projectId: null, updatedAt: now });
     await ctx.db.delete(id);
     await queueAssetSync(ctx, id);
   },
