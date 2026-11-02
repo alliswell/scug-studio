@@ -114,12 +114,10 @@
   --kb-card: #ffffff;
   --kb-card-ring: rgb(0 0 0 / 0.07);
   --kb-drop: rgb(35 88 216 / 0.08);
-  --kb-posted-bg: #eaf7ee;
-  --kb-posted-ring: #c6e9d1;
-  --kb-posted-text: #15803d;
-  --kb-posted-card: #f6fcf8;
-  --kb-prod-tint: rgb(217 119 6 / 0.07);
-  --kb-editor-tint: rgb(47 111 237 / 0.07);
+  --kb-done-bg: #eaf7ee;
+  --kb-done-ring: #c6e9d1;
+  --kb-done-text: #15803d;
+  --kb-done-card: #f6fcf8;
   --link: #2358d8;
   --link-underline: rgb(35 88 216 / 0.35);
 }
@@ -236,12 +234,10 @@
   --kb-card: #2a2a2a;
   --kb-card-ring: rgb(255 255 255 / 0.07);
   --kb-drop: rgb(122 165 255 / 0.12);
-  --kb-posted-bg: rgb(34 160 84 / 0.12);
-  --kb-posted-ring: rgb(52 199 108 / 0.22);
-  --kb-posted-text: #5fd38d;
-  --kb-posted-card: rgb(34 160 84 / 0.10);
-  --kb-prod-tint: rgb(245 158 11 / 0.08);
-  --kb-editor-tint: rgb(96 145 255 / 0.09);
+  --kb-done-bg: rgb(34 160 84 / 0.12);
+  --kb-done-ring: rgb(52 199 108 / 0.22);
+  --kb-done-text: #5fd38d;
+  --kb-done-card: rgb(34 160 84 / 0.10);
   --link: #7aa5ff;
   --link-underline: rgb(122 165 255 / 0.4);
 }

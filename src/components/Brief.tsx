@@ -6,7 +6,7 @@ import { IconLink, IconPlus, IconX } from "./icons";
 
 export type BriefLink = { id: string; label: string; url: string };
 
-/** The brief for the video (sponsor notes, delivery requirements) plus its links. Internal only. */
+/** The brief: scope, constraints, what done looks like, plus the links that go with it. Internal only. */
 export function Brief({
   value,
   onChange,
@@ -41,7 +41,7 @@ export function Brief({
           ref={ta}
           value={value}
           aria-label="Brief"
-          placeholder="Paste or write the marketing brief for this video"
+          placeholder="Scope, constraints, what done looks like"
           onChange={(e) => onChange?.(e.target.value)}
           className="block w-full resize-none overflow-hidden rounded-lg border border-(--c-l-e5e5e5) bg-(--c-b-ffffff) px-3 py-2.5 text-[15px] leading-[1.6] text-(--c-t-1b1b1b) outline-none placeholder:text-(--c-t-b0b0b0) focus:border-(--c-l-c9c9c9)"
         />
@@ -131,7 +131,7 @@ function BriefLinks({ links, onChange }: { links: BriefLink[]; onChange?: (links
               autoFocus
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="Paste a link (doc, contract, email thread…)"
+              placeholder="Paste a link (lease, drawings, permit set, quote, Figma…)"
               inputMode="url"
               className={inputCls}
             />

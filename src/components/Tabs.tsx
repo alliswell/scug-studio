@@ -3,29 +3,34 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 /** shortLabel is used on phones, where the tab row is narrow */
-export type ScriptTab = { id: string; label: string; shortLabel?: string; badge?: string; content: ReactNode };
+export type Tab = { id: string; label: string; shortLabel?: string; badge?: string; content: ReactNode };
 
-/** Editor instructions / Details / Captions, under the title. The first tab shows by default. */
-export function ScriptTabs({
+/** The sections under the project title. The first tab shows by default. */
+export function Tabs({
   tabs,
   collapsible,
+  storageKey = "tabs",
 }: {
-  tabs: ScriptTab[];
+  tabs: Tab[];
   /** Lets you fold the sections away while writing, leaving just the tab names (remembered on this device) */
   collapsible?: boolean;
+  /** Which fold flag to remember. Physical and digital projects have different tabs, so a single
+   *  flag for every project would fold a set the person never chose to fold. */
+  storageKey?: string;
 }) {
   const [active, setActive] = useState(tabs[0]?.id);
   const [folded, setFolded] = useState(false);
+  const foldKey = `${storageKey}-folded`;
   useEffect(() => {
     if (!collapsible) return;
     try {
-      setFolded(localStorage.getItem("script-details-folded") === "1");
+      setFolded(localStorage.getItem(foldKey) === "1");
     } catch {}
-  }, [collapsible]);
+  }, [collapsible, foldKey]);
   const fold = (next: boolean) => {
     setFolded(next);
     try {
-      localStorage.setItem("script-details-folded", next ? "1" : "0");
+      localStorage.setItem(foldKey, next ? "1" : "0");
     } catch {}
   };
   const current = tabs.find((t) => t.id === active) ?? tabs[0];
@@ -36,7 +41,7 @@ export function ScriptTabs({
       {/* On phones the row scrolls sideways instead of squeezing, so more tabs can be added later */}
       <div
         role="tablist"
-        aria-label="Script sections"
+        aria-label="Project sections"
         className={`-mx-5 flex items-center gap-5 overflow-x-auto px-5 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden ${
           shut ? "" : "border-b border-(--c-l-ebebeb)"
         }`}
@@ -76,7 +81,7 @@ export function ScriptTabs({
             type="button"
             onClick={() => fold(!shut)}
             aria-expanded={!shut}
-            title={shut ? "Show the script details" : "Hide the details while you write"}
+            title={shut ? "Show the project details" : "Hide the details while you write"}
             className={`ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-(--c-t-9a9a9a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b) ${shut ? "h-7" : "-mb-px h-7"}`}
           >
             {shut ? "Show" : "Hide"}

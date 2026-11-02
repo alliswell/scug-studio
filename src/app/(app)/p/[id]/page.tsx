@@ -1,9 +1,9 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { VideoEditor } from "@/components/VideoEditor";
+import { ProjectPage } from "@/components/ProjectPage";
 
-export default function VideoPage() {
+export default function Page() {
   const { id } = useParams<{ id: string }>();
-  return <VideoEditor key={id} id={id} />;
+  return <ProjectPage key={id} id={id} />;
 }

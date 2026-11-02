@@ -24,7 +24,10 @@ export type Idea = {
 
 type Layout = "grid" | "list";
 
-/** Mymind: saved ideas as cards (masonry or list), each with a note. Light grey, calm, fast. */
+/**
+ * References: the studio's board of furniture, finishes, lighting and brand references, as cards
+ * (masonry or list), each with a note. Light grey, calm, fast.
+ */
 export function Mymind() {
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -250,7 +253,7 @@ function AddIdea({ compact }: { compact?: boolean }) {
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save();
         }}
-        placeholder={compact ? "Paste a link or write a note…" : "Paste a link (tweet, video, anything) or write a note…"}
+        placeholder={compact ? "Paste a link or write a note…" : "Paste a link (a product page, a post, anything) or write a note…"}
         className={`block w-full resize-none bg-transparent leading-[1.55] ${compact ? "text-[14px]" : "text-[15px]"} text-(--c-t-1b1b1b) outline-none placeholder:text-(--c-t-9a9a9a)`}
       />
       {file && (

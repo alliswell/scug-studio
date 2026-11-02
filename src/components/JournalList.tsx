@@ -15,12 +15,12 @@ const day = (t: number) => {
 };
 
 /**
- * The Journal: Riley's entries and internal docs. Each entry is the same document and editor as a script,
- * kept out of the script views, with no status or details.
+ * The Journal: studio entries and internal docs. Each entry is the same document and editor as a
+ * project, kept out of the project views, with no stage or details.
  */
 export function JournalList() {
-  const entries = useQuery(api.videos.journal);
-  const create = useMutation(api.videos.create);
+  const entries = useQuery(api.projects.journal);
+  const create = useMutation(api.projects.create);
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");
@@ -28,7 +28,7 @@ export function JournalList() {
   const newEntry = async () => {
     setBusy(true);
     try {
-      router.push(`/v/${await create({ format: "long", journal: true })}`);
+      router.push(`/p/${await create({ type: "physical", journal: true })}`);
     } catch {
       setBusy(false);
     }
@@ -84,7 +84,7 @@ export function JournalList() {
       ) : (
         <div className="mt-2 flex flex-col">
           {shown.map((e) => (
-            <Link key={e.id} href={`/v/${e.id}`} className="group -mx-3 block rounded-lg border-b border-(--c-l-f0f0f0) px-3 py-3.5 no-underline last:border-b-0 hover:bg-(--c-b-fafafa)">
+            <Link key={e.id} href={`/p/${e.id}`} className="group -mx-3 block rounded-lg border-b border-(--c-l-f0f0f0) px-3 py-3.5 no-underline last:border-b-0 hover:bg-(--c-b-fafafa)">
               <div className="flex items-baseline gap-3">
                 <span className={`min-w-0 flex-1 truncate text-[15.5px] font-medium ${e.title.trim() ? "text-(--c-t-1b1b1b)" : "text-(--c-t-9a9a9a)"}`}>{e.title.trim() || "Untitled"}</span>
                 <span className="shrink-0 text-[12.5px] text-(--c-t-9a9a9a)">{day(e.createdAt)}</span>

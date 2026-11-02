@@ -16,7 +16,7 @@ const ago = (t: number) => {
   return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric", year: new Date(t).getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
 };
 
-/** The PDFs app: papers and documents to read and mark up. Upload, drop files here, or add one from a link. */
+/** The PDFs app: drawing sets, permit sets and cutsheets to read and mark up. Upload, drop files here, or add one from a link. */
 export function PdfList() {
   const pdfs = useQuery(api.pdfs.list);
   const create = useMutation(api.pdfs.create);
@@ -90,7 +90,7 @@ export function PdfList() {
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <div className="min-w-0 flex-1">
           <h1 className="m-0 text-[28px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">PDFs</h1>
-          <p className="m-0 mt-1 text-[14px] text-(--c-t-737373)">Papers and documents to read, highlight and talk to yourself about.</p>
+          <p className="m-0 mt-1 text-[14px] text-(--c-t-737373)">Drawing sets, permit sets and vendor cutsheets to read, highlight and talk to yourself about.</p>
         </div>
         <button
           type="button"
@@ -127,7 +127,7 @@ export function PdfList() {
         <input
           value={link}
           onChange={(e) => setLink(e.target.value)}
-          placeholder="Add from a link: an arXiv page, or any .pdf address"
+          placeholder="Add from a link: a vendor cutsheet, or any .pdf address"
           aria-label="Add a PDF from a link"
           className="h-8 min-w-0 flex-1 bg-transparent text-[14px] text-(--c-t-1b1b1b) outline-none placeholder:text-(--c-t-9a9a9a)"
         />

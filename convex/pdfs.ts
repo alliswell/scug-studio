@@ -1,4 +1,4 @@
-// The PDFs app: papers and documents to read in Native Note, with highlights, comments and notes (typed or
+// The PDFs app: drawing sets, permit sets, cutsheets and papers to read, with highlights, comments and notes (typed or
 // spoken) on any spot or page. Agents can add PDFs (from a link, an upload or base64) and leave notes.
 
 import { ConvexError, v } from "convex/values";
@@ -285,7 +285,7 @@ type AddArgs = { url?: string; base64?: string; storageId?: string; title?: stri
 async function fetchPdf(url: string) {
   const target = pdfLink(url);
   if (!/^https?:\/\//i.test(target)) throw new ConvexError("The link must start with http:// or https://");
-  const res = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (Native Note PDF fetcher)", Accept: "application/pdf,*/*" }, redirect: "follow" });
+  const res = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (Switchyards Studio PDF fetcher)", Accept: "application/pdf,*/*" }, redirect: "follow" });
   if (!res.ok) throw new ConvexError(`Couldn't download the PDF (${res.status} from ${new URL(target).host})`);
   const bytes = new Uint8Array(await res.arrayBuffer());
   return { bytes, sourceUrl: url.trim(), finalUrl: res.url || target };

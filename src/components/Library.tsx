@@ -12,7 +12,7 @@ const PAGE = 40;
 
 /**
  * Library: every file pasted into a comment, as a grid. Loads a page at a time as you scroll; search looks
- * through names, the line each file was commented on, the script and the comment (server-side, indexed).
+ * through names, the line each file was commented on, the project and the comment (server-side, indexed).
  */
 export function Library() {
   const [search, setSearch] = useState("");
@@ -45,7 +45,7 @@ export function Library() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name, line or script…"
+            placeholder="Search by name, line or project…"
             aria-label="Search the library"
             className="w-full border-none bg-transparent text-[16px] text-(--c-t-1b1b1b) outline-none placeholder:text-(--c-t-9a9a9a)"
           />
@@ -151,19 +151,20 @@ function Details({ a, onClose }: { a: LibraryAsset; onClose: () => void }) {
           <div className="-mt-3 text-[13px] text-(--c-t-8a8a8a)">{facts.join(" · ")}</div>
 
           <Field label="Linked line">
-            {a.wholeScript ? (
-              <span className="text-(--c-t-8a8a8a)">The whole script (not a single line)</span>
+            {a.wholeProject ? (
+              <span className="text-(--c-t-8a8a8a)">The whole project (not a single line)</span>
             ) : (
               <>
                 <span className="whitespace-pre-wrap">{a.linkedLine || <span className="text-(--c-t-8a8a8a)">(empty line)</span>}</span>
-                {a.lineRemoved && <span className="mt-1 block text-[12px] text-(--c-t-b45309)">This line has since been removed from the script.</span>}
+                {a.lineRemoved && <span className="mt-1 block text-[12px] text-(--c-t-b45309)">This line has since been removed from the document.</span>}
               </>
             )}
           </Field>
-          <Field label="Script">
-            <Link href={`/v/${a.videoId}`} className="font-medium text-(--c-t-2358d8) no-underline hover:underline">
-              {a.scriptTitle}
+          <Field label="Project">
+            <Link href={`/p/${a.projectId}`} className="font-medium text-(--c-t-2358d8) no-underline hover:underline">
+              {a.projectTitle}
             </Link>
+            {a.clubName && <span className="ml-1.5 text-[13px] text-(--c-t-8a8a8a)">{a.clubName}</span>}
           </Field>
           {a.commentText.trim() && (
             <Field label="Comment">
@@ -183,10 +184,10 @@ function Details({ a, onClose }: { a: LibraryAsset; onClose: () => void }) {
               </button>
             )}
             <Link
-              href={`/v/${a.videoId}`}
+              href={`/p/${a.projectId}`}
               className="inline-flex h-9 items-center rounded-lg border border-(--c-l-dcdcdc) px-3.5 text-[14px] font-medium text-(--c-t-1b1b1b) no-underline hover:bg-(--c-b-fafafa)"
             >
-              Open script
+              Open project
             </Link>
           </div>
         </div>

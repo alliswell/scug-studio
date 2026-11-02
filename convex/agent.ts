@@ -1,29 +1,26 @@
-// Agent API for Native Note. Every route needs the AGENT_API_KEY bearer token.
+// Agent API for Switchyards Studio. Every route needs the AGENT_API_KEY bearer token.
 //
-// Safety model: agents can change anything except delete a script. Script text edits go straight in,
+// Safety model: agents can change anything except delete a project. Document edits go straight in,
 // and every edit first keeps the previous text as an archived version (Versions menu) that can be
-// restored. suggest_script_edit still exists for when someone wants to approve changes first.
+// restored. suggest_project_edit still exists for when someone wants to approve changes first.
 
 import { ConvexError, v, type Infer } from "convex/values";
 import { httpAction, internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { newSlug, writeEditedVersion } from "./lib";
-import { blockColor, blockType, legacyStatus, sponsorship, textColor, videoStatus } from "./schema";
+import { blockColor, blockType, projectStage, projectType, textColor } from "./schema";
 import { authorized } from "./agentAuth";
-import { toStatus } from "./migrations";
+import { assertStage, firstStage } from "./projects";
+import { resolveClub } from "./clubs";
 import { insertUpdate } from "./updates";
 import { insertIdea } from "./ideas";
 import { reattachComments } from "./commentAnchors";
 import { queueAssetSync } from "./library";
 import { boardCard, boardIdOf } from "./boards";
 import { ensureTodo } from "./todo";
-import { agentAddVersion, agentAddVideo, agentComment } from "./editFeed";
 import { attachFiles, resolveAttachments, storeBlob } from "./agentFiles";
 
-/** Agents may still send the old statuses; they're mapped to the new ones. */
-const status = v.union(videoStatus, legacyStatus);
-const format = v.union(v.literal("long"), v.literal("short"));
 const line = v.object({
   key: v.optional(v.string()),
   type: v.optional(blockType),
@@ -45,7 +42,7 @@ const update = v.object({
   source: v.optional(v.union(v.string(), v.null())),
   /** When it happened, YYYY-MM-DD or a full ISO time; defaults to now */
   date: v.optional(v.string()),
-  /** Needs a response right away: pinned to the top of the Feed */
+  /** Needs a response right away: pinned to the top of the Log */
   urgent: v.optional(v.boolean()),
 });
 type UpdateArg = Infer<typeof update>;
@@ -57,32 +54,38 @@ function parseDate(d: string | undefined) {
   return t;
 }
 
-async function addUpdates(ctx: MutationCtx, videoId: Id<"videos">, list: UpdateArg[], agentName: string | undefined) {
-  if (list.length > 100) throw new ConvexError("At most 100 updates at once");
+function checkTargetDate(d: string | null | undefined) {
+  if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new ConvexError("targetDate must be YYYY-MM-DD, or null to clear it");
+}
+
+async function addUpdates(ctx: MutationCtx, projectId: Id<"projects">, list: UpdateArg[], agentName: string | undefined) {
+  if (list.length > 100) throw new ConvexError("At most 100 log entries at once");
   const name = (agentName?.trim() || "Claude").slice(0, 60);
-  for (const u of list) await insertUpdate(ctx, videoId, { ...u, happenedAt: parseDate(u.date) }, { name, id: null, agent: true });
+  for (const u of list) await insertUpdate(ctx, projectId, { ...u, happenedAt: parseDate(u.date) }, { name, id: null, agent: true });
 }
 
 const MAX_LINES = 2000;
 const MAX_TEXT = 20000;
-const shareUrl = (slug: string) => `${process.env.SITE_URL ?? ""}/s/${slug}`;
+const site = () => process.env.SITE_URL ?? "";
+const shareUrl = (slug: string) => `${site()}/s/${slug}`;
+const projectUrl = (id: Id<"projects">) => `${site()}/p/${id}`;
 
-async function resolveVideo(ctx: QueryCtx, script: string) {
-  const id = ctx.db.normalizeId("videos", script);
-  const video = id
+async function resolveProject(ctx: QueryCtx, project: string) {
+  const id = ctx.db.normalizeId("projects", project);
+  const row = id
     ? await ctx.db.get(id)
     : await ctx.db
-        .query("videos")
-        .withIndex("by_slug", (q) => q.eq("shareSlug", script.split("/").pop() ?? script))
+        .query("projects")
+        .withIndex("by_slug", (q) => q.eq("shareSlug", project.split("/").pop() ?? project))
         .unique();
-  if (!video) throw new ConvexError("Script not found. Pass its id or share link.");
-  return video;
+  if (!row) throw new ConvexError("Project not found. Pass its id or its share link; list_projects has the ids.");
+  return row;
 }
 
-async function docOf(ctx: QueryCtx, videoId: Id<"videos">, kind: "main" | "instructions") {
+async function docOf(ctx: QueryCtx, projectId: Id<"projects">, kind: "main" | "tasks") {
   return ctx.db
     .query("documents")
-    .withIndex("by_video", (q) => q.eq("videoId", videoId).eq("kind", kind))
+    .withIndex("by_project", (q) => q.eq("projectId", projectId).eq("kind", kind))
     .first();
 }
 
@@ -112,66 +115,79 @@ function checkLines(lines: Line[]) {
 
 // ---------- Reads ----------
 
-export const listScripts = internalQuery({
-  args: { query: v.optional(v.string()) },
-  handler: async (ctx, { query }) => {
+export const listProjects = internalQuery({
+  args: { query: v.optional(v.string()), club: v.optional(v.string()), type: v.optional(projectType) },
+  handler: async (ctx, { query, club, type }) => {
     const q = query?.trim().toLowerCase();
-    const videos = await ctx.db.query("videos").withIndex("by_updated").order("desc").collect();
+    const clubId = club ? (await resolveClub(ctx, club))._id : null;
+    const rows = await ctx.db.query("projects").withIndex("by_updated").order("desc").collect();
     const out = [];
-    for (const vid of videos) {
-      if (vid.kind === "journal" || vid.kind === "todo") continue; // see list_journal, get_todo
-      if (q && !vid.title.toLowerCase().includes(q)) continue;
+    for (const p of rows) {
+      if (p.kind) continue; // notes and the Todo list have their own tools
+      if (q && !p.title.toLowerCase().includes(q)) continue;
+      if (type && p.type !== type) continue;
+      if (clubId && p.clubId !== clubId) continue;
       const edited = await ctx.db
         .query("documents")
-        .withIndex("by_video", (x) => x.eq("videoId", vid._id).eq("kind", "edited"))
+        .withIndex("by_project", (x) => x.eq("projectId", p._id).eq("kind", "edited"))
         .collect();
+      const clubRow = p.clubId ? await ctx.db.get(p.clubId) : null;
       out.push({
-        id: vid._id,
-        title: vid.title,
-        status: vid.status,
-        format: vid.format,
-        liveDate: vid.liveDate,
-        sponsored: vid.sponsored ?? "none",
-        updatedAt: new Date(vid.updatedAt).toISOString(),
-        editedVersionsWaiting: edited.length,
-        pinned: !!vid.pinnedAt,
-        shareUrl: shareUrl(vid.shareSlug),
+        id: p._id,
+        title: p.title,
+        type: p.type,
+        stage: p.stage,
+        club: clubRow ? { id: clubRow._id, name: clubRow.name } : null,
+        targetDate: p.targetDate,
+        updatedAt: new Date(p.updatedAt).toISOString(),
+        suggestedEditsWaiting: edited.length,
+        pinned: !!p.pinnedAt,
+        url: projectUrl(p._id),
+        shareUrl: shareUrl(p.shareSlug),
       });
     }
     return out;
   },
 });
 
-export const script = internalQuery({
-  args: { script: v.string() },
-  handler: async (ctx, { script }) => {
-    const video = await resolveVideo(ctx, script);
+export const project = internalQuery({
+  args: { project: v.string() },
+  handler: async (ctx, { project: ref }) => {
+    const p = await resolveProject(ctx, ref);
     const comments = await ctx.db
       .query("comments")
-      .withIndex("by_video", (q) => q.eq("videoId", video._id))
+      .withIndex("by_project", (q) => q.eq("projectId", p._id))
       .collect();
-    const mainLines = await linesOf(ctx, (await docOf(ctx, video._id, "main"))?._id);
-    const insLines = await linesOf(ctx, (await docOf(ctx, video._id, "instructions"))?._id);
-    const lineKeys = new Set([...mainLines, ...insLines].map((l) => l.key));
+    const mainLines = await linesOf(ctx, (await docOf(ctx, p._id, "main"))?._id);
+    const taskLines = await linesOf(ctx, (await docOf(ctx, p._id, "tasks"))?._id);
+    const lineKeys = new Set([...mainLines, ...taskLines].map((l) => l.key));
+    const club = p.clubId ? await ctx.db.get(p.clubId) : null;
+    const reviews = await ctx.db
+      .query("reviews")
+      .withIndex("by_project", (q) => q.eq("projectId", p._id))
+      .collect();
     return {
-      id: video._id,
-      title: video.title,
-      status: video.status,
-      format: video.format,
-      liveDate: video.liveDate,
-      sponsored: video.sponsored ?? "none",
-      shareUrl: shareUrl(video.shareSlug),
-      /** Everything a video editor needs, including direct download links for all attached files (no auth) */
-      assetsUrl: `${shareUrl(video.shareSlug)}/agent`,
-      brief: video.brief ?? "",
-      briefLinks: (video.briefLinks ?? []).map(({ label, url }) => ({ label, url })),
-      captions: (video.captions ?? []).map(({ id: _id, fields, ...c }) => ({ ...c, fields: fields.map((f) => ({ label: f.label, value: f.value })) })),
-      instructions: insLines,
+      id: p._id,
+      title: p.title,
+      type: p.type,
+      stage: p.stage,
+      club: club ? { id: club._id, name: club.name, status: club.status } : null,
+      targetDate: p.targetDate,
+      url: projectUrl(p._id),
+      shareUrl: shareUrl(p.shareSlug),
+      /** Everything a GC, fabricator or vendor needs, with direct download links for every file (no sign-in) */
+      filesUrl: `${shareUrl(p.shareSlug)}/agent`,
+      brief: p.brief ?? "",
+      briefLinks: (p.briefLinks ?? []).map(({ label, url }) => ({ label, url })),
+      tasks: taskLines,
       lines: mainLines,
-      updates: (
+      reviews: reviews
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .map((r) => ({ id: r._id, title: r.title, status: r.status, round: r.roundCount, changesRequested: !!r.changesRequestedAt })),
+      log: (
         await ctx.db
           .query("updates")
-          .withIndex("by_video", (q) => q.eq("videoId", video._id))
+          .withIndex("by_project", (q) => q.eq("projectId", p._id))
           .order("desc")
           .collect()
       ).map((u) => ({ title: u.title, date: new Date(u.happenedAt).toISOString(), source: u.source, link: u.link, details: u.details, by: u.authorName })),
@@ -192,44 +208,49 @@ export const script = internalQuery({
 
 // ---------- Writes (all additive or reviewable) ----------
 
-/** Journal entries for agents: id, title, dates (read or edit one like a script with get_script / edit_lines) */
-export const listJournal = internalQuery({
+/** Studio notes for agents: id, title, dates (read or edit one like a project with get_project / edit_lines) */
+export const listNotes = internalQuery({
   args: { query: v.optional(v.string()) },
   handler: async (ctx, { query }) => {
     const q = query?.trim().toLowerCase();
-    const rows = (await ctx.db.query("videos").withIndex("by_updated").order("desc").collect()).filter((v) => v.kind === "journal");
+    const rows = (await ctx.db.query("projects").withIndex("by_updated").order("desc").collect()).filter((p) => p.kind === "journal");
     return rows
-      .filter((v) => !q || v.title.toLowerCase().includes(q))
-      .map((v) => ({ id: v._id, title: v.title, createdAt: new Date(v._creationTime).toISOString(), updatedAt: new Date(v.updatedAt).toISOString(), url: `${process.env.SITE_URL ?? ""}/v/${v._id}` }));
+      .filter((p) => !q || p.title.toLowerCase().includes(q))
+      .map((p) => ({ id: p._id, title: p.title, createdAt: new Date(p._creationTime).toISOString(), updatedAt: new Date(p.updatedAt).toISOString(), url: projectUrl(p._id) }));
   },
 });
 
-export const createScript = internalMutation({
+export const createProject = internalMutation({
   args: {
     title: v.string(),
-    format: v.optional(format),
-    status: v.optional(status),
-    liveDate: v.optional(v.union(v.string(), v.null())),
-    sponsored: v.optional(sponsorship),
+    type: v.optional(projectType),
+    stage: v.optional(projectStage),
+    club: v.optional(v.union(v.string(), v.null())),
+    targetDate: v.optional(v.union(v.string(), v.null())),
     lines: v.optional(v.array(line)),
-    instructions: v.optional(v.array(v.string())),
+    tasks: v.optional(v.array(v.string())),
     brief: v.optional(v.string()),
     updates: v.optional(v.array(update)),
     agentName: v.optional(v.string()),
-    /** Make a Journal entry instead of a script */
+    /** Make a studio note instead of a project */
     journal: v.optional(v.boolean()),
   },
   handler: async (ctx, a) => {
     if (a.brief && a.brief.length > 50000) throw new ConvexError("The brief can be at most 50,000 characters");
     checkLines(a.lines ?? []);
+    checkTargetDate(a.targetDate);
+    const type = a.type ?? "physical";
+    const stage = a.stage ?? firstStage(type);
+    assertStage(type, stage);
+    const clubId = a.club ? (await resolveClub(ctx, a.club))._id : null;
     const now = Date.now();
     const slug = newSlug();
-    const videoId = await ctx.db.insert("videos", {
+    const projectId = await ctx.db.insert("projects", {
       title: a.title.slice(0, 300),
-      liveDate: a.liveDate ?? null,
-      status: toStatus(a.status ?? "inProduction"),
-      format: a.format ?? "long",
-      sponsored: a.sponsored ?? "none",
+      clubId,
+      type,
+      stage,
+      targetDate: a.targetDate ?? null,
       ...(a.brief ? { brief: a.brief } : {}),
       shareSlug: slug,
       editPasscode: null,
@@ -237,13 +258,13 @@ export const createScript = internalMutation({
       updatedAt: now,
       ...(a.journal ? { kind: "journal" as const } : {}),
     });
-    const mainId = await ctx.db.insert("documents", { videoId, kind: "main", editorName: null, guestToken: null, updatedAt: now });
-    const insId = await ctx.db.insert("documents", { videoId, kind: "instructions", editorName: null, guestToken: null, updatedAt: now });
+    const mainId = await ctx.db.insert("documents", { projectId, kind: "main", editorName: null, guestToken: null, updatedAt: now });
+    const tasksId = await ctx.db.insert("documents", { projectId, kind: "tasks", editorName: null, guestToken: null, updatedAt: now });
     const lines = a.lines?.length ? a.lines : [{ text: "" }];
     for (const [i, l] of lines.entries()) {
       await ctx.db.insert("blocks", {
         documentId: mainId,
-        videoId,
+        projectId,
         key: crypto.randomUUID(),
         position: i,
         type: l.type ?? "p",
@@ -253,10 +274,10 @@ export const createScript = internalMutation({
         sourceBlockId: null,
       });
     }
-    for (const [i, text] of (a.instructions ?? []).slice(0, 200).entries()) {
+    for (const [i, text] of (a.tasks ?? []).slice(0, 200).entries()) {
       await ctx.db.insert("blocks", {
-        documentId: insId,
-        videoId,
+        documentId: tasksId,
+        projectId,
         key: crypto.randomUUID(),
         position: i,
         type: "todo",
@@ -266,52 +287,63 @@ export const createScript = internalMutation({
         sourceBlockId: null,
       });
     }
-    await addUpdates(ctx, videoId, a.updates ?? [], a.agentName);
-    return { id: videoId, shareUrl: shareUrl(slug) };
+    await addUpdates(ctx, projectId, a.updates ?? [], a.agentName);
+    return { id: projectId, url: projectUrl(projectId), shareUrl: shareUrl(slug) };
   },
 });
 
-/** Pin a script to the top of the Scripts views and the sidebar, or unpin it */
-export const setScriptPinned = internalMutation({
-  args: { script: v.string(), pinned: v.optional(v.boolean()) },
-  handler: async (ctx, { script, pinned = true }) => {
-    const video = await resolveVideo(ctx, script);
-    await ctx.db.patch(video._id, { pinnedAt: pinned ? (video.pinnedAt ?? Date.now()) : null });
-    return { id: video._id, title: video.title, pinned };
+/** Pin a project to the top of the project views and the sidebar, or unpin it */
+export const setProjectPinned = internalMutation({
+  args: { project: v.string(), pinned: v.optional(v.boolean()) },
+  handler: async (ctx, { project: ref, pinned = true }) => {
+    const p = await resolveProject(ctx, ref);
+    await ctx.db.patch(p._id, { pinnedAt: pinned ? (p.pinnedAt ?? Date.now()) : null });
+    return { id: p._id, title: p.title, pinned };
   },
 });
 
-export const updateDetails = internalMutation({
+export const updateProject = internalMutation({
   args: {
-    script: v.string(),
+    project: v.string(),
     title: v.optional(v.string()),
-    liveDate: v.optional(v.union(v.string(), v.null())),
-    format: v.optional(format),
-    status: v.optional(status),
-    sponsored: v.optional(sponsorship),
+    targetDate: v.optional(v.union(v.string(), v.null())),
+    type: v.optional(projectType),
+    stage: v.optional(projectStage),
+    club: v.optional(v.union(v.string(), v.null())),
   },
-  handler: async (ctx, { script, ...patch }) => {
-    const video = await resolveVideo(ctx, script);
-    if (patch.liveDate && !/^\d{4}-\d{2}-\d{2}$/.test(patch.liveDate)) throw new ConvexError("liveDate must be YYYY-MM-DD");
+  handler: async (ctx, { project: ref, club, ...patch }) => {
+    const p = await resolveProject(ctx, ref);
+    checkTargetDate(patch.targetDate);
     if (patch.title !== undefined) patch.title = patch.title.slice(0, 300);
-    const { status: st, ...rest } = patch;
-    await ctx.db.patch(video._id, { ...rest, ...(st ? { status: toStatus(st) } : {}), updatedAt: Date.now() });
-    if (rest.title !== undefined) await queueAssetSync(ctx, video._id);
-    return { id: video._id };
+    // Switching pipelines strands the old stage, so the project starts the new pipeline over
+    // unless this same call says where it should land.
+    const type = patch.type ?? p.type;
+    const stage = patch.stage ?? (patch.type && patch.type !== p.type ? firstStage(patch.type) : p.stage);
+    assertStage(type, stage);
+    const clubId = club === undefined ? undefined : club === null ? null : (await resolveClub(ctx, club))._id;
+    await ctx.db.patch(p._id, {
+      ...patch,
+      type,
+      stage,
+      ...(clubId !== undefined ? { clubId } : {}),
+      updatedAt: Date.now(),
+    });
+    if (patch.title !== undefined) await queueAssetSync(ctx, p._id);
+    return { id: p._id, type, stage };
   },
 });
 
 /**
- * Proposes new text for the whole script. Lines that keep an existing `key` are treated as edits of
+ * Proposes new text for the whole document. Lines that keep an existing `key` are treated as edits of
  * that line; lines without a key are new; existing lines left out are shown as removed. Nothing
  * changes until a person clicks "Use this version". One pending suggestion per agent name.
  */
 export const suggestEdit = internalMutation({
-  args: { script: v.string(), agentName: v.optional(v.string()), lines: v.array(line) },
-  handler: async (ctx, { script, agentName, lines }) => {
+  args: { project: v.string(), agentName: v.optional(v.string()), lines: v.array(line) },
+  handler: async (ctx, { project: ref, agentName, lines }) => {
     checkLines(lines);
-    const video = await resolveVideo(ctx, script);
-    const main = await docOf(ctx, video._id, "main");
+    const p = await resolveProject(ctx, ref);
+    const main = await docOf(ctx, p._id, "main");
     const existing = new Map((await linesOf(ctx, main?._id)).map((l) => [l.key, l]));
     const used = new Set<string>();
     const name = (agentName?.trim() || "Claude").slice(0, 60);
@@ -340,34 +372,34 @@ export const suggestEdit = internalMutation({
       );
       for (const b of blocks) if (b.sourceBlockId) b.color = colors.get(b.sourceBlockId) ?? null;
     }
-    const token = `agent:${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}:${video._id}`.padEnd(32, "-");
-    const documentId = await writeEditedVersion(ctx, video._id, token, `${name} (agent)`, blocks);
-    return { editedVersionId: documentId, note: "Saved as an Edited version. A person must accept it before the script changes." };
+    const token = `agent:${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}:${p._id}`.padEnd(32, "-");
+    const documentId = await writeEditedVersion(ctx, p._id, token, `${name} (agent)`, blocks);
+    return { editedVersionId: documentId, note: "Saved as an Edited version. A person must accept it before the document changes." };
   },
 });
 
-export const addInstructions = internalMutation({
-  args: { script: v.string(), items: v.array(v.string()) },
-  handler: async (ctx, { script, items }) => {
-    if (items.length > 200) throw new ConvexError("At most 200 instructions at once");
-    const video = await resolveVideo(ctx, script);
+export const addTasks = internalMutation({
+  args: { project: v.string(), items: v.array(v.string()) },
+  handler: async (ctx, { project: ref, items }) => {
+    if (items.length > 200) throw new ConvexError("At most 200 tasks at once");
+    const p = await resolveProject(ctx, ref);
     const now = Date.now();
-    let ins = await docOf(ctx, video._id, "instructions");
-    if (!ins) {
-      const id = await ctx.db.insert("documents", { videoId: video._id, kind: "instructions", editorName: null, guestToken: null, updatedAt: now });
-      ins = (await ctx.db.get(id))!;
+    let tasks = await docOf(ctx, p._id, "tasks");
+    if (!tasks) {
+      const id = await ctx.db.insert("documents", { projectId: p._id, kind: "tasks", editorName: null, guestToken: null, updatedAt: now });
+      tasks = (await ctx.db.get(id))!;
     }
     const current = await ctx.db
       .query("blocks")
-      .withIndex("by_document", (q) => q.eq("documentId", ins._id))
+      .withIndex("by_document", (q) => q.eq("documentId", tasks._id))
       .collect();
     // Replace a lone empty placeholder to-do instead of appending after it
     for (const b of current) if (!b.content.trim() && current.length === 1) await ctx.db.delete(b._id);
     let position = current.reduce((m, b) => Math.max(m, b.position), -1) + 1;
     for (const text of items) {
       await ctx.db.insert("blocks", {
-        documentId: ins._id,
-        videoId: video._id,
+        documentId: tasks._id,
+        projectId: p._id,
         key: crypto.randomUUID(),
         position: position++,
         type: "todo",
@@ -377,87 +409,39 @@ export const addInstructions = internalMutation({
         sourceBlockId: null,
       });
     }
-    await ctx.db.patch(video._id, { updatedAt: now });
+    await ctx.db.patch(p._id, { updatedAt: now });
     return { added: items.length };
   },
 });
 
-/** Edit one existing editor instruction (its text, or check it off). Instructions can't be removed. */
-export const updateInstruction = internalMutation({
-  args: { script: v.string(), key: v.string(), text: v.optional(v.string()), checked: v.optional(v.boolean()) },
-  handler: async (ctx, { script, key, text, checked }) => {
-    const video = await resolveVideo(ctx, script);
-    const ins = await docOf(ctx, video._id, "instructions");
-    const block = ins
+/** Edit one task on the project's punch list: its text, or tick it off. */
+export const updateTask = internalMutation({
+  args: { project: v.string(), key: v.string(), text: v.optional(v.string()), checked: v.optional(v.boolean()) },
+  handler: async (ctx, { project: ref, key, text, checked }) => {
+    const p = await resolveProject(ctx, ref);
+    const tasks = await docOf(ctx, p._id, "tasks");
+    const block = tasks
       ? await ctx.db
           .query("blocks")
-          .withIndex("by_document_key", (q) => q.eq("documentId", ins._id).eq("key", key))
+          .withIndex("by_document_key", (q) => q.eq("documentId", tasks._id).eq("key", key))
           .unique()
       : null;
-    if (!block) throw new ConvexError("Instruction not found. Use a key from the script's instructions.");
+    if (!block) throw new ConvexError("Task not found. Use a key from the project's tasks (get_project).");
     await ctx.db.patch(block._id, {
       ...(text !== undefined ? { content: text.slice(0, MAX_TEXT) } : {}),
       ...(checked !== undefined ? { checked } : {}),
     });
-    await ctx.db.patch(video._id, { updatedAt: Date.now() });
+    await ctx.db.patch(p._id, { updatedAt: Date.now() });
     return { key };
   },
 });
 
-/**
- * Add or update one platform's caption, matched by platform name (case-insensitive). Only the parts
- * you pass change. Custom fields are matched by label: new labels are added, existing ones updated.
- * Platforms and fields can't be removed through the API.
- */
-export const setCaption = internalMutation({
-  args: {
-    script: v.string(),
-    platform: v.string(),
-    caption: v.optional(v.string()),
-    linkInBio: v.optional(v.string()),
-    posted: v.optional(v.boolean()),
-    fields: v.optional(v.array(v.object({ label: v.string(), value: v.string() }))),
-  },
-  handler: async (ctx, { script, platform, caption, linkInBio, posted, fields }) => {
-    const video = await resolveVideo(ctx, script);
-    const typed = platform.trim().slice(0, 60);
-    const known = ["Instagram", "TikTok", "YouTube", "YouTube Shorts", "X", "LinkedIn", "Facebook", "Threads"];
-    const name = known.find((k) => k.toLowerCase() === typed.toLowerCase()) ?? typed;
-    if (!name) throw new ConvexError("Pass a platform name, e.g. Instagram");
-    if (caption && caption.length > MAX_TEXT) throw new ConvexError(`Captions can be at most ${MAX_TEXT} characters`);
-    const list = [...(video.captions ?? [])];
-    let i = list.findIndex((c) => c.platform.trim().toLowerCase() === name.toLowerCase());
-    if (i < 0) {
-      if (list.length >= 30) throw new ConvexError("At most 30 platforms");
-      list.push({ id: crypto.randomUUID(), platform: name, caption: "", linkInBio: "", posted: false, fields: [] });
-      i = list.length - 1;
-    }
-    const cur = list[i];
-    const merged = [...cur.fields];
-    for (const f of fields ?? []) {
-      const j = merged.findIndex((x) => x.label.trim().toLowerCase() === f.label.trim().toLowerCase());
-      if (j >= 0) merged[j] = { ...merged[j], value: f.value.slice(0, MAX_TEXT) };
-      else merged.push({ id: crypto.randomUUID(), label: f.label.trim().slice(0, 100), value: f.value.slice(0, MAX_TEXT) });
-    }
-    if (merged.length > 30) throw new ConvexError("At most 30 custom fields per platform");
-    list[i] = {
-      ...cur,
-      caption: caption ?? cur.caption,
-      linkInBio: linkInBio ?? cur.linkInBio,
-      posted: posted ?? cur.posted,
-      fields: merged,
-    };
-    await ctx.db.patch(video._id, { captions: list, updatedAt: Date.now() });
-    return { platform: list[i].platform, caption: list[i].caption, linkInBio: list[i].linkInBio, posted: list[i].posted, fields: merged.map((f) => ({ label: f.label, value: f.value })) };
-  },
-});
-
-/** Add links to the brief (docs, contracts, email threads). A link whose URL is already there gets the new label. */
+/** Add links to the brief (lease, drawings, permit set, vendor quote, Figma). A link whose URL is already there gets the new label. */
 export const addBriefLinks = internalMutation({
-  args: { script: v.string(), links: v.array(v.object({ label: v.string(), url: v.string() })) },
-  handler: async (ctx, { script, links }) => {
-    const video = await resolveVideo(ctx, script);
-    const list = [...(video.briefLinks ?? [])];
+  args: { project: v.string(), links: v.array(v.object({ label: v.string(), url: v.string() })) },
+  handler: async (ctx, { project: ref, links }) => {
+    const p = await resolveProject(ctx, ref);
+    const list = [...(p.briefLinks ?? [])];
     for (const l of links) {
       const url = l.url.trim();
       if (!/^https?:\/\//i.test(url)) throw new ConvexError(`Links must start with http:// or https:// (${url})`);
@@ -467,30 +451,30 @@ export const addBriefLinks = internalMutation({
       else list.push({ id: crypto.randomUUID(), label, url: url.slice(0, 2000) });
     }
     if (list.length > 100) throw new ConvexError("At most 100 brief links");
-    await ctx.db.patch(video._id, { briefLinks: list, updatedAt: Date.now() });
+    await ctx.db.patch(p._id, { briefLinks: list, updatedAt: Date.now() });
     return { links: list.map(({ label, url }) => ({ label, url })) };
   },
 });
 
 /** Write the brief. mode "append" (default) adds to the end; "replace" swaps the whole brief. */
 export const setBrief = internalMutation({
-  args: { script: v.string(), text: v.string(), mode: v.optional(v.union(v.literal("append"), v.literal("replace"))) },
-  handler: async (ctx, { script, text, mode }) => {
-    const video = await resolveVideo(ctx, script);
-    const cur = video.brief ?? "";
+  args: { project: v.string(), text: v.string(), mode: v.optional(v.union(v.literal("append"), v.literal("replace"))) },
+  handler: async (ctx, { project: ref, text, mode }) => {
+    const p = await resolveProject(ctx, ref);
+    const cur = p.brief ?? "";
     const brief = mode === "replace" || !cur.trim() ? text : `${cur.replace(/\s+$/, "")}\n\n${text}`;
     if (brief.length > 50000) throw new ConvexError("The brief can be at most 50,000 characters");
-    await ctx.db.patch(video._id, { brief, updatedAt: Date.now() });
+    await ctx.db.patch(p._id, { brief, updatedAt: Date.now() });
     return { length: brief.length };
   },
 });
 
-/** Log what happened on a video (Updates tab): new emails, calls, approvals, dates moving. Can't be removed by agents. */
+/** Log what happened on a project (Log tab): site visits, vendor calls, approvals, inspections, dates moving. Can't be removed by agents. */
 export const addUpdate = internalMutation({
-  args: { script: v.string(), agentName: v.optional(v.string()), ...update.fields },
-  handler: async (ctx, { script, agentName, ...u }) => {
-    const video = await resolveVideo(ctx, script);
-    await addUpdates(ctx, video._id, [u], agentName);
+  args: { project: v.string(), agentName: v.optional(v.string()), ...update.fields },
+  handler: async (ctx, { project: ref, agentName, ...u }) => {
+    const p = await resolveProject(ctx, ref);
+    await addUpdates(ctx, p._id, [u], agentName);
     return { added: 1 };
   },
 });
@@ -511,15 +495,15 @@ type NewLine = {
 };
 
 /**
- * Makes `lines` the script's text. The current text is kept as an earlier version (the Versions menu,
- * "Replaced … by <agent>"), so any change can be undone with Restore. Lines that keep their key stay the
+ * Makes `lines` the project document's text. The current text is kept as an earlier version (the Versions
+ * menu, "Replaced … by <agent>"), so any change can be undone with Restore. Lines that keep their key stay the
  * same line (their comments stay on them); lines without a key are new; lines left out are deleted.
  */
-async function replaceScript(ctx: MutationCtx, video: Doc<"videos">, lines: NewLine[], agentName: string | undefined) {
+async function replaceMain(ctx: MutationCtx, p: Doc<"projects">, lines: NewLine[], agentName: string | undefined) {
   checkLines(lines);
   const name = (agentName?.trim() || "Claude").slice(0, 60);
   const now = Date.now();
-  const main = await docOf(ctx, video._id, "main");
+  const main = await docOf(ctx, p._id, "main");
   const old = main
     ? await ctx.db
         .query("blocks")
@@ -528,7 +512,7 @@ async function replaceScript(ctx: MutationCtx, video: Doc<"videos">, lines: NewL
     : [];
   const byKey = new Map(old.map((b) => [b.key, b]));
   const used = new Set<string>();
-  const documentId = await ctx.db.insert("documents", { videoId: video._id, kind: "main", editorName: name, guestToken: null, updatedAt: now });
+  const documentId = await ctx.db.insert("documents", { projectId: p._id, kind: "main", editorName: name, guestToken: null, updatedAt: now });
   const out = [];
   for (const [position, l] of lines.entries()) {
     const prev = l.key && byKey.has(l.key) && !used.has(l.key) ? byKey.get(l.key)! : undefined;
@@ -549,7 +533,7 @@ async function replaceScript(ctx: MutationCtx, video: Doc<"videos">, lines: NewL
     }
     await ctx.db.insert("blocks", {
       documentId,
-      videoId: video._id,
+      projectId: p._id,
       key,
       position,
       type,
@@ -567,34 +551,34 @@ async function replaceScript(ctx: MutationCtx, video: Doc<"videos">, lines: NewL
   }
   // The old text becomes an earlier version; its label says who replaced it
   if (main) await ctx.db.patch(main._id, { kind: "archived", editorName: name, updatedAt: now });
-  await ctx.db.patch(video._id, { updatedAt: now });
+  await ctx.db.patch(p._id, { updatedAt: now });
   // Comments are never lost: they stay on kept lines, follow rewritten ones, and come back on restore
-  const ins = await docOf(ctx, video._id, "instructions");
-  const insKeys = new Set(ins ? (await linesOf(ctx, ins._id)).map((l) => l.key) : []);
+  const tasks = await docOf(ctx, p._id, "tasks");
+  const taskKeys = new Set(tasks ? (await linesOf(ctx, tasks._id)).map((l) => l.key) : []);
   const comments = await reattachComments(
     ctx,
-    video._id,
+    p._id,
     old.map((b) => ({ key: b.key, content: b.content })),
     out.map((l) => ({ key: l.key, content: l.text })),
-    insKeys,
+    taskKeys,
   );
   return {
     lines: out,
     ...comments,
     note:
       "Saved. The previous text (and where its comments were) is kept under Versions and can be restored." +
-      (comments.commentsOnRemovedLines ? " Some comments were on lines you removed; they now show on the whole script. Use move_comment to put them on the right line." : ""),
+      (comments.commentsOnRemovedLines ? " Some comments were on lines you removed; they now show on the whole project. Use move_comment to put them on the right line." : ""),
   };
 }
 
-async function currentLines(ctx: QueryCtx, video: Doc<"videos">): Promise<NewLine[]> {
-  return (await linesOf(ctx, (await docOf(ctx, video._id, "main"))?._id)).map((l) => ({ key: l.key, type: l.type, text: l.text, ...(l.indent ? { indent: l.indent } : {}) }));
+async function currentLines(ctx: QueryCtx, p: Doc<"projects">): Promise<NewLine[]> {
+  return (await linesOf(ctx, (await docOf(ctx, p._id, "main"))?._id)).map((l) => ({ key: l.key, type: l.type, text: l.text, ...(l.indent ? { indent: l.indent } : {}) }));
 }
 
-/** Replace the whole script text (keep keys for lines you keep). Previous version is saved. */
-export const editScript = internalMutation({
-  args: { script: v.string(), agentName: v.optional(v.string()), lines: v.array(line) },
-  handler: async (ctx, { script, agentName, lines }) => replaceScript(ctx, await resolveVideo(ctx, script), lines, agentName),
+/** Replace the whole project document (keep keys for lines you keep). Previous version is saved. */
+export const replaceDocument = internalMutation({
+  args: { project: v.string(), agentName: v.optional(v.string()), lines: v.array(line) },
+  handler: async (ctx, { project: ref, agentName, lines }) => replaceMain(ctx, await resolveProject(ctx, ref), lines, agentName),
 });
 
 const lineOp = v.union(
@@ -618,14 +602,14 @@ const lineOp = v.union(
  * at the top), delete a line, move a line. All ops apply in order as one change; the previous version is saved.
  */
 export const editLines = internalMutation({
-  args: { script: v.string(), agentName: v.optional(v.string()), ops: v.array(lineOp) },
-  handler: async (ctx, { script, agentName, ops }) => {
+  args: { project: v.string(), agentName: v.optional(v.string()), ops: v.array(lineOp) },
+  handler: async (ctx, { project: ref, agentName, ops }) => {
     if (ops.length > 500) throw new ConvexError("At most 500 operations at once");
-    const video = await resolveVideo(ctx, script);
-    const list = await currentLines(ctx, video);
+    const p = await resolveProject(ctx, ref);
+    const list = await currentLines(ctx, p);
     const indexOf = (key: string) => {
       const i = list.findIndex((l) => l.key === key);
-      if (i < 0) throw new ConvexError(`No line with key ${key}. Read the script again for current keys.`);
+      if (i < 0) throw new ConvexError(`No line with key ${key}. Read the project again for current keys.`);
       return i;
     };
     const after = (key: string | null | undefined) => (key ? indexOf(key) + 1 : 0);
@@ -650,18 +634,18 @@ export const editLines = internalMutation({
         list.splice(after(o.afterKey), 0, moved);
       }
     }
-    return replaceScript(ctx, video, list, agentName);
+    return replaceMain(ctx, p, list, agentName);
   },
 });
 
-/** Earlier versions of the script, newest first, to restore one. */
+/** Earlier versions of the project document, newest first, to restore one. */
 export const listVersions = internalQuery({
-  args: { script: v.string() },
-  handler: async (ctx, { script }) => {
-    const video = await resolveVideo(ctx, script);
+  args: { project: v.string() },
+  handler: async (ctx, { project: ref }) => {
+    const p = await resolveProject(ctx, ref);
     const docs = await ctx.db
       .query("documents")
-      .withIndex("by_video", (q) => q.eq("videoId", video._id).eq("kind", "archived"))
+      .withIndex("by_project", (q) => q.eq("projectId", p._id).eq("kind", "archived"))
       .collect();
     return docs
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -671,12 +655,12 @@ export const listVersions = internalQuery({
 
 /** Bring back an earlier version's text (the current text is saved as a version first). */
 export const restoreVersion = internalMutation({
-  args: { script: v.string(), versionId: v.string(), agentName: v.optional(v.string()) },
-  handler: async (ctx, { script, versionId, agentName }) => {
-    const video = await resolveVideo(ctx, script);
+  args: { project: v.string(), versionId: v.string(), agentName: v.optional(v.string()) },
+  handler: async (ctx, { project: ref, versionId, agentName }) => {
+    const p = await resolveProject(ctx, ref);
     const id = ctx.db.normalizeId("documents", versionId);
     const doc = id ? await ctx.db.get(id) : null;
-    if (!doc || doc.videoId !== video._id || doc.kind !== "archived") throw new ConvexError("Version not found. Use list_versions.");
+    if (!doc || doc.projectId !== p._id || doc.kind !== "archived") throw new ConvexError("Version not found. Use list_versions.");
     // Exactly as it was, colors and images included
     const blocks = await ctx.db
       .query("blocks")
@@ -691,70 +675,77 @@ export const restoreVersion = internalMutation({
       textColor: b.textColor ?? null,
       ...(b.images ? { images: b.images } : {}),
     }));
-    return replaceScript(ctx, video, lines, agentName);
+    return replaceMain(ctx, p, lines, agentName);
   },
 });
 
-/** Remove an editor instruction. */
-export const deleteInstruction = internalMutation({
-  args: { script: v.string(), key: v.string() },
-  handler: async (ctx, { script, key }) => {
-    const video = await resolveVideo(ctx, script);
-    const ins = await docOf(ctx, video._id, "instructions");
-    const block = ins
+/** Remove a task from the project's punch list. */
+export const deleteTask = internalMutation({
+  args: { project: v.string(), key: v.string() },
+  handler: async (ctx, { project: ref, key }) => {
+    const p = await resolveProject(ctx, ref);
+    const tasks = await docOf(ctx, p._id, "tasks");
+    const block = tasks
       ? await ctx.db
           .query("blocks")
-          .withIndex("by_document_key", (q) => q.eq("documentId", ins._id).eq("key", key))
+          .withIndex("by_document_key", (q) => q.eq("documentId", tasks._id).eq("key", key))
           .unique()
       : null;
-    if (!block) throw new ConvexError("Instruction not found. Use a key from the script's instructions.");
+    if (!block) throw new ConvexError("Task not found. Use a key from the project's tasks (get_project).");
     await ctx.db.delete(block._id);
-    await ctx.db.patch(video._id, { updatedAt: Date.now() });
+    await ctx.db.patch(p._id, { updatedAt: Date.now() });
     return { deleted: key };
   },
 });
 
-/** Remove one platform's caption, or brief links by URL. */
-export const removeCaption = internalMutation({
-  args: { script: v.string(), platform: v.string() },
-  handler: async (ctx, { script, platform }) => {
-    const video = await resolveVideo(ctx, script);
-    const list = (video.captions ?? []).filter((c) => c.platform.trim().toLowerCase() !== platform.trim().toLowerCase());
-    if (list.length === (video.captions ?? []).length) throw new ConvexError(`No ${platform} caption on this script`);
-    await ctx.db.patch(video._id, { captions: list, updatedAt: Date.now() });
-    return { removed: platform };
+export const removeBriefLinks = internalMutation({
+  args: { project: v.string(), urls: v.array(v.string()) },
+  handler: async (ctx, { project: ref, urls }) => {
+    const p = await resolveProject(ctx, ref);
+    const drop = new Set(urls.map((u) => u.trim()));
+    const list = (p.briefLinks ?? []).filter((l) => !drop.has(l.url));
+    await ctx.db.patch(p._id, { briefLinks: list, updatedAt: Date.now() });
+    return { removed: (p.briefLinks ?? []).length - list.length };
   },
 });
 
-export const removeBriefLinks = internalMutation({
-  args: { script: v.string(), urls: v.array(v.string()) },
-  handler: async (ctx, { script, urls }) => {
-    const video = await resolveVideo(ctx, script);
-    const drop = new Set(urls.map((u) => u.trim()));
-    const list = (video.briefLinks ?? []).filter((l) => !drop.has(l.url));
-    await ctx.db.patch(video._id, { briefLinks: list, updatedAt: Date.now() });
-    return { removed: (video.briefLinks ?? []).length - list.length };
+// ---------- Review marks ----------
+
+/**
+ * Tick a mark off, or re-open it. convex/reviews.ts owns every other agent-facing review operation;
+ * its `updateMark` needs a signed-in person, so resolving one by hand lives here.
+ * `resolvedByRound` is cleared because only a new round can claim to have answered a mark.
+ */
+export const resolveMark = internalMutation({
+  args: { mark: v.string(), resolved: v.optional(v.boolean()) },
+  handler: async (ctx, { mark, resolved = true }) => {
+    const id = ctx.db.normalizeId("reviewMarks", mark);
+    const m = id ? await ctx.db.get(id) : null;
+    if (!m) throw new ConvexError("Mark not found. Use a mark id from get_review.");
+    await ctx.db.patch(m._id, { resolved, resolvedByRound: null });
+    await ctx.db.patch(m.reviewId, { updatedAt: Date.now() });
+    return { id: m._id, resolved };
   },
 });
 
 // ---------- Comments ----------
 
-async function commentOf(ctx: QueryCtx, video: Doc<"videos">, commentId: string) {
+async function commentOf(ctx: QueryCtx, p: Doc<"projects">, commentId: string) {
   const id = ctx.db.normalizeId("comments", commentId);
   const c = id ? await ctx.db.get(id) : null;
-  if (!c || c.videoId !== video._id) throw new ConvexError("Comment not found on this script. Use the id from get_script.");
+  if (!c || c.projectId !== p._id) throw new ConvexError("Comment not found on this project. Use the id from get_project.");
   return c;
 }
 
-/** Put a comment on another line (by key or by part of its text), or on the whole script (neither given). */
+/** Put a comment on another line (by key or by part of its text), or on the whole project (neither given). */
 export const moveComment = internalMutation({
-  args: { script: v.string(), commentId: v.string(), toKey: v.optional(v.string()), lineContains: v.optional(v.string()) },
-  handler: async (ctx, { script, commentId, toKey, lineContains }) => {
-    const video = await resolveVideo(ctx, script);
-    const c = await commentOf(ctx, video, commentId);
+  args: { project: v.string(), commentId: v.string(), toKey: v.optional(v.string()), lineContains: v.optional(v.string()) },
+  handler: async (ctx, { project: ref, commentId, toKey, lineContains }) => {
+    const p = await resolveProject(ctx, ref);
+    const c = await commentOf(ctx, p, commentId);
     const lines = [
-      ...(await linesOf(ctx, (await docOf(ctx, video._id, "main"))?._id)),
-      ...(await linesOf(ctx, (await docOf(ctx, video._id, "instructions"))?._id)),
+      ...(await linesOf(ctx, (await docOf(ctx, p._id, "main"))?._id)),
+      ...(await linesOf(ctx, (await docOf(ctx, p._id, "tasks"))?._id)),
     ];
     let key: string | null = null;
     if (toKey) {
@@ -772,16 +763,16 @@ export const moveComment = internalMutation({
       keyHistory: c.blockKey && c.blockKey !== key ? [...history.filter((k) => k !== c.blockKey), c.blockKey].slice(-20) : history,
       updatedAt: Date.now(),
     });
-    await queueAssetSync(ctx, video._id);
+    await queueAssetSync(ctx, p._id);
     return { id: c._id, lineKey: key };
   },
 });
 
 /** Change the text of a comment an agent wrote. People's comments can be moved but not rewritten. */
 export const updateComment = internalMutation({
-  args: { script: v.string(), commentId: v.string(), text: v.string() },
-  handler: async (ctx, { script, commentId, text }) => {
-    const c = await commentOf(ctx, await resolveVideo(ctx, script), commentId);
+  args: { project: v.string(), commentId: v.string(), text: v.string() },
+  handler: async (ctx, { project: ref, commentId, text }) => {
+    const c = await commentOf(ctx, await resolveProject(ctx, ref), commentId);
     if (!c.agent) throw new ConvexError("That comment was written by a person. Leave a new comment (or move theirs) instead of rewriting it.");
     await ctx.db.patch(c._id, { text: text.slice(0, 10000), updatedAt: Date.now() });
     return { id: c._id };
@@ -790,30 +781,30 @@ export const updateComment = internalMutation({
 
 /** Delete a comment an agent wrote. */
 export const deleteComment = internalMutation({
-  args: { script: v.string(), commentId: v.string() },
-  handler: async (ctx, { script, commentId }) => {
-    const c = await commentOf(ctx, await resolveVideo(ctx, script), commentId);
+  args: { project: v.string(), commentId: v.string() },
+  handler: async (ctx, { project: ref, commentId }) => {
+    const c = await commentOf(ctx, await resolveProject(ctx, ref), commentId);
     if (!c.agent) throw new ConvexError("That comment was written by a person; only its author can delete it.");
     await ctx.db.delete(c._id);
-    await queueAssetSync(ctx, c.videoId);
+    await queueAssetSync(ctx, c.projectId);
     return { deleted: c._id };
   },
 });
 
-// ---------- Mymind (ideas) ----------
+// ---------- References (Mymind) ----------
 
-/** Save ideas to Mymind: one or many (e.g. an import of bookmarks). Links already saved aren't duplicated. */
-export const addIdeas = internalMutation({
+/** Save references: one or many (e.g. an import of bookmarks). Links already saved aren't duplicated. */
+export const addReferences = internalMutation({
   args: {
-    ideas: v.array(v.object({ url: v.optional(v.string()), note: v.optional(v.string()), date: v.optional(v.string()) })),
+    references: v.array(v.object({ url: v.optional(v.string()), note: v.optional(v.string()), date: v.optional(v.string()) })),
     agentName: v.optional(v.string()),
   },
-  handler: async (ctx, { ideas, agentName }) => {
-    if (ideas.length > 200) throw new ConvexError("At most 200 ideas per call; send the rest in another call");
+  handler: async (ctx, { references, agentName }) => {
+    if (references.length > 200) throw new ConvexError("At most 200 references per call; send the rest in another call");
     const name = (agentName?.trim() || "Claude").slice(0, 60);
     let added = 0;
     let duplicates = 0;
-    for (const i of ideas) {
+    for (const i of references) {
       const r = await insertIdea(ctx, { url: i.url, note: i.note }, { name, agent: true }, parseDate(i.date));
       if (r.duplicate) duplicates++;
       else added++;
@@ -822,7 +813,7 @@ export const addIdeas = internalMutation({
   },
 });
 
-export const listIdeas = internalQuery({
+export const listReferences = internalQuery({
   args: { query: v.optional(v.string()), limit: v.optional(v.number()) },
   handler: async (ctx, { query, limit }) => {
     const n = Math.min(Math.max(limit ?? 50, 1), 500);
@@ -844,10 +835,12 @@ const json = (body: unknown, status = 200) =>
 
 const errorOf = (e: unknown) => (e instanceof ConvexError ? String(e.data) : e instanceof Error ? e.message : "Failed");
 
+const UNAUTHORIZED = "Unauthorized. Send Authorization: Bearer <AGENT_API_KEY>.";
+
 /** Wraps a handler with the API key check, JSON parsing and friendly errors. */
 function route(handler: (ctx: Parameters<Parameters<typeof httpAction>[0]>[0], body: Record<string, unknown>, url: URL) => Promise<unknown>) {
   return httpAction(async (ctx, req) => {
-    if (!authorized(req)) return json({ error: "Unauthorized. Send Authorization: Bearer <NATIVE_NOTE_API_KEY>." }, 401);
+    if (!authorized(req)) return json({ error: UNAUTHORIZED }, 401);
     let body: Record<string, unknown> = {};
     if (req.method === "POST") {
       const parsed = await req.json().catch(() => null);
@@ -864,27 +857,39 @@ function route(handler: (ctx: Parameters<Parameters<typeof httpAction>[0]>[0], b
 
 // Body values arrive as unknown JSON; Convex validators check them again inside each function.
 /* eslint-disable @typescript-eslint/no-explicit-any */
-export const httpListScripts = route((ctx, _b, url) =>
-  ctx.runQuery(internal.agent.listScripts, { query: url.searchParams.get("q") ?? undefined }),
+export const httpListProjects = route((ctx, _b, url) =>
+  ctx.runQuery(internal.agent.listProjects, {
+    query: url.searchParams.get("q") ?? undefined,
+    club: url.searchParams.get("club") ?? undefined,
+    type: (url.searchParams.get("type") as "physical" | "digital" | null) ?? undefined,
+  }),
 );
-export const httpGetScript = route((ctx, _b, url) => {
-  const script = url.searchParams.get("script");
-  if (!script) throw new ConvexError("Pass ?script=<id or share link>");
-  return ctx.runQuery(internal.agent.script, { script });
+export const httpGetProject = route((ctx, _b, url) => {
+  const project = url.searchParams.get("project");
+  if (!project) throw new ConvexError("Pass ?project=<id or share link>");
+  return ctx.runQuery(internal.agent.project, { project });
 });
-export const httpCreateScript = route((ctx, b) => ctx.runMutation(internal.agent.createScript, b as any));
-export const httpUpdateDetails = route((ctx, b) => ctx.runMutation(internal.agent.updateDetails, b as any));
+export const httpCreateProject = route((ctx, b) => ctx.runMutation(internal.agent.createProject, b as any));
+export const httpUpdateProject = route((ctx, b) => ctx.runMutation(internal.agent.updateProject, b as any));
 export const httpSuggestEdit = route((ctx, b) => ctx.runMutation(internal.agent.suggestEdit, b as any));
-export const httpAddInstructions = route((ctx, b) => ctx.runMutation(internal.agent.addInstructions, b as any));
-export const httpUpdateInstruction = route((ctx, b) => ctx.runMutation(internal.agent.updateInstruction, b as any));
-export const httpSetCaption = route((ctx, b) => ctx.runMutation(internal.agent.setCaption, b as any));
+export const httpAddTasks = route((ctx, b) => ctx.runMutation(internal.agent.addTasks, b as any));
+export const httpUpdateTask = route((ctx, b) => ctx.runMutation(internal.agent.updateTask, b as any));
+export const httpDeleteTask = route((ctx, b) => ctx.runMutation(internal.agent.deleteTask, b as any));
 export const httpAddBriefLinks = route((ctx, b) => ctx.runMutation(internal.agent.addBriefLinks, b as any));
 export const httpSetBrief = route((ctx, b) => ctx.runMutation(internal.agent.setBrief, b as any));
 export const httpAddUpdate = route((ctx, b) => ctx.runMutation(internal.agent.addUpdate, b as any));
-export const httpAddIdeas = route((ctx, b) => ctx.runMutation(internal.agent.addIdeas, b as any));
-export const httpListIdeas = route((ctx, _b, url) =>
-  ctx.runQuery(internal.agent.listIdeas, { query: url.searchParams.get("q") ?? undefined, limit: Number(url.searchParams.get("limit")) || undefined }),
+export const httpAddReferences = route((ctx, b) => ctx.runMutation(internal.agent.addReferences, b as any));
+export const httpListReferences = route((ctx, _b, url) =>
+  ctx.runQuery(internal.agent.listReferences, { query: url.searchParams.get("q") ?? undefined, limit: Number(url.searchParams.get("limit")) || undefined }),
 );
+export const httpListClubs = route((ctx) => ctx.runQuery(internal.clubs.listForAgent, {}));
+export const httpGetClub = route((ctx, _b, url) => {
+  const club = url.searchParams.get("club");
+  if (!club) throw new ConvexError("Pass ?club=<id or name>");
+  return ctx.runQuery(internal.clubs.getForAgent, { club });
+});
+export const httpCreateClub = route((ctx, b) => ctx.runMutation(internal.clubs.createForAgent, b as any));
+export const httpUpdateClub = route((ctx, b) => ctx.runMutation(internal.clubs.updateForAgent, b as any));
 export const httpListBoards = route((ctx, _b, url) => ctx.runQuery(internal.boards.listForAgent, { query: url.searchParams.get("q") ?? undefined }));
 export const httpGetBoard = route((ctx, _b, url) => {
   const board = url.searchParams.get("board");
@@ -894,45 +899,33 @@ export const httpGetBoard = route((ctx, _b, url) => {
 export const httpCreateBoard = route((ctx, b) => ctx.runMutation(internal.boards.createForAgent, b as any));
 export const httpAddToBoard = route((ctx, b) => ctx.runMutation(internal.boards.addForAgent, b as any));
 export const httpEditBoard = route((ctx, b) => ctx.runMutation(internal.boards.editForAgent, b as any));
-export const httpEditVideos = route((ctx, _b, url) =>
-  ctx.runQuery(internal.editFeed.listForAgent, {
-    status: (url.searchParams.get("status") as "editing" | "ready" | "posted" | "archived" | null) ?? undefined,
-    editsRequested: url.searchParams.has("requested") ? url.searchParams.get("requested") !== "0" : undefined,
+export const httpListReviews = route((ctx, _b, url) =>
+  ctx.runQuery(internal.reviews.listForAgent, {
+    status: (url.searchParams.get("status") as "inReview" | "changesRequested" | "approved" | "archived" | null) ?? undefined,
+    changesRequested: url.searchParams.has("requested") ? url.searchParams.get("requested") !== "0" : undefined,
+    project: url.searchParams.get("project") ?? undefined,
+    club: url.searchParams.get("club") ?? undefined,
   }),
 );
-export const httpEditVideo = route((ctx, _b, url) => ctx.runQuery(internal.editFeed.getForAgent, { video: url.searchParams.get("video") ?? "" }));
-export const httpAddEditVideo = route((ctx, b) => agentAddVideo(ctx, b));
-export const httpAddEditVersion = route((ctx, b) => agentAddVersion(ctx, b));
-export const httpCommentEditVideo = route((ctx, b) => agentComment(ctx, b));
-export const httpEditStatus = route((ctx, b) => ctx.runMutation(internal.editFeed.setStatusForAgent, b as any));
+export const httpGetReview = route((ctx, _b, url) => ctx.runQuery(internal.reviews.getForAgent, { review: url.searchParams.get("review") ?? "" }));
+export const httpStartReview = route((ctx, b) => ctx.runAction(internal.reviews.createForAgent, b as any));
+export const httpAddReviewRound = route((ctx, b) => ctx.runAction(internal.reviews.addRoundForAgent, b as any));
+export const httpMarkReview = route((ctx, b) => ctx.runAction(internal.reviews.markForAgent, b as any));
+export const httpResolveMark = route((ctx, b) => ctx.runMutation(internal.agent.resolveMark, b as any));
+export const httpReviewStatus = route((ctx, b) => ctx.runMutation(internal.reviews.setStatusForAgent, b as any));
+export const httpApproveReview = route((ctx, b) =>
+  ctx.runMutation(internal.reviews.setStatusForAgent, { ...(b as any), status: "approved" as const }),
+);
 export const httpPinBoard = route((ctx, b) => ctx.runMutation(internal.boards.setPinnedForAgent, b as any));
-export const httpPinScript = route((ctx, b) => ctx.runMutation(internal.agent.setScriptPinned, b as any));
-export const httpListTopics = route((ctx, _b, url) =>
-  ctx.runQuery(internal.topics.listForAgent, {
-    status: (url.searchParams.get("status") as "new" | "saved" | "used" | "dismissed" | null) ?? undefined,
-    query: url.searchParams.get("q") ?? undefined,
-    full: url.searchParams.get("full") === "1",
-  }),
-);
-export const httpAddTopics = route((ctx, b) => ctx.runMutation(internal.topics.upsertForAgent, b as any));
-export const httpFinishTopicRun = route((ctx, b) => ctx.runMutation(internal.topics.finishRunForAgent, b as any));
-export const httpTopicRuns = route((ctx) => ctx.runQuery(internal.topics.runsForAgent, {}));
-export const httpTopicHistory = route((ctx, _b, url) => {
-  const topic = url.searchParams.get("topic");
-  if (!topic) throw new ConvexError("Add ?topic=<id or title>");
-  return ctx.runQuery(internal.topics.historyForAgent, { topic });
-});
-export const httpUpdateTopic = route((ctx, b) => ctx.runMutation(internal.topics.updateForAgent, b as any));
-export const httpEditScript = route((ctx, b) => ctx.runMutation(internal.agent.editScript, b as any));
+export const httpPinProject = route((ctx, b) => ctx.runMutation(internal.agent.setProjectPinned, b as any));
+export const httpReplaceDocument = route((ctx, b) => ctx.runMutation(internal.agent.replaceDocument, b as any));
 export const httpEditLines = route((ctx, b) => ctx.runMutation(internal.agent.editLines, b as any));
 export const httpListVersions = route((ctx, _b, url) => {
-  const script = url.searchParams.get("script");
-  if (!script) throw new ConvexError("Pass ?script=<id or share link>");
-  return ctx.runQuery(internal.agent.listVersions, { script });
+  const project = url.searchParams.get("project");
+  if (!project) throw new ConvexError("Pass ?project=<id or share link>");
+  return ctx.runQuery(internal.agent.listVersions, { project });
 });
 export const httpRestoreVersion = route((ctx, b) => ctx.runMutation(internal.agent.restoreVersion, b as any));
-export const httpDeleteInstruction = route((ctx, b) => ctx.runMutation(internal.agent.deleteInstruction, b as any));
-export const httpRemoveCaption = route((ctx, b) => ctx.runMutation(internal.agent.removeCaption, b as any));
 export const httpRemoveBriefLinks = route((ctx, b) => ctx.runMutation(internal.agent.removeBriefLinks, b as any));
 export const httpMoveComment = route((ctx, b) => ctx.runMutation(internal.agent.moveComment, b as any));
 export const httpUpdateComment = route((ctx, b) => ctx.runMutation(internal.agent.updateComment, b as any));
@@ -949,11 +942,11 @@ export const httpUploadUrl = route(async (ctx) => ({ uploadUrl: await ctx.runMut
 
 /**
  * One-step upload: POST the raw file as the body (Content-Type = its type), up to 20 MB.
- * ?comment=<id> adds it to that comment; or ?script=<id or share link> (plus optional text, lineContains,
+ * ?comment=<id> adds it to that comment; or ?project=<id or share link> (plus optional text, lineContains,
  * blockKey, agentName) posts a new comment with it. ?name= sets the file name.
  */
 export const httpFile = httpAction(async (ctx, req) => {
-  if (!authorized(req)) return json({ error: "Unauthorized. Send Authorization: Bearer <NATIVE_NOTE_API_KEY>." }, 401);
+  if (!authorized(req)) return json({ error: UNAUTHORIZED }, 401);
   const q = new URL(req.url).searchParams;
   try {
     const storageId = await storeBlob(ctx, await req.blob());
@@ -961,10 +954,10 @@ export const httpFile = httpAction(async (ctx, req) => {
     const file = { storageId, name: q.get("name") ?? undefined, mime: type && type !== "application/octet-stream" ? type : undefined };
     const comment = q.get("comment");
     if (comment) return json(await attachFiles(ctx, comment, [file]));
-    const script = q.get("script");
-    if (!script) throw new ConvexError("Pass ?comment=<id> or ?script=<id or share link>");
+    const project = q.get("project");
+    if (!project) throw new ConvexError("Pass ?comment=<id> or ?project=<id or share link>");
     const id = await ctx.runMutation(internal.comments.addAgent, {
-      script,
+      project,
       text: q.get("text") ?? "",
       agentName: q.get("agentName") ?? undefined,
       blockKey: q.get("blockKey") ?? undefined,
@@ -999,8 +992,8 @@ export const addTodoItems = internalMutation({
     const people = await teamOf(ctx);
     if (!items.length) throw new ConvexError("Give at least one item");
     if (items.length > 200) throw new ConvexError("At most 200 items at once");
-    const video = (await ctx.db.get(await ensureTodo(ctx, null)))!;
-    let list = await currentLines(ctx, video);
+    const todo = (await ctx.db.get(await ensureTodo(ctx, null)))!;
+    let list = await currentLines(ctx, todo);
     // A fresh list is one empty bullet: replace it rather than adding below it
     if (list.length === 1 && !list[0].text.trim()) list = [];
     let at = list.length;
@@ -1021,8 +1014,8 @@ export const addTodoItems = internalMutation({
       ...(it.assignee ? { assignee: personOf(people, it.assignee) } : {}),
     }));
     list.splice(at, 0, ...added);
-    const res = await replaceScript(ctx, video, list, agentName);
-    return { todo: video._id, url: `${process.env.SITE_URL ?? ""}/v/${video._id}`, added: items.length, lines: res };
+    const res = await replaceMain(ctx, todo, list, agentName);
+    return { todo: todo._id, url: projectUrl(todo._id), added: items.length, lines: res };
   },
 });
 
@@ -1036,7 +1029,7 @@ function personOf(people: Awaited<ReturnType<typeof teamOf>>, who: string) {
   const hit =
     people.find((p) => p.id === who || p.email === w || p.name.toLowerCase() === w) ??
     people.filter((p) => p.name.toLowerCase().split(/\s+/)[0] === w.split(/\s+/)[0]).at(0);
-  if (!hit) throw new ConvexError(`No one called "${who}" has joined Native Note. get_todo lists the team.`);
+  if (!hit) throw new ConvexError(`No one called "${who}" has joined Switchyards Studio. get_todo lists the team.`);
   return hit.id;
 }
 
@@ -1050,8 +1043,8 @@ export const team = internalQuery({
 export const updateTodoItem = internalMutation({
   args: { key: v.string(), checked: v.optional(v.boolean()), assignee: v.optional(v.union(v.string(), v.null())), text: v.optional(v.string()) },
   handler: async (ctx, { key, checked, assignee, text }) => {
-    const video = (await ctx.db.get(await ensureTodo(ctx, null)))!;
-    const main = await docOf(ctx, video._id, "main");
+    const todo = (await ctx.db.get(await ensureTodo(ctx, null)))!;
+    const main = await docOf(ctx, todo._id, "main");
     const block = main
       ? await ctx.db
           .query("blocks")
@@ -1069,7 +1062,7 @@ export const updateTodoItem = internalMutation({
     await ctx.db.patch(block._id, patch);
     const now = Date.now();
     await ctx.db.patch(main!._id, { updatedAt: now });
-    await ctx.db.patch(video._id, { updatedAt: now });
+    await ctx.db.patch(todo._id, { updatedAt: now });
     return { key, checked: patch.checked ?? block.checked, assignee: (assignee !== undefined ? patch.assignee : block.assignee) ?? null, text: patch.content ?? block.content };
   },
 });

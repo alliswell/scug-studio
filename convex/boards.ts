@@ -1,4 +1,4 @@
-// Excalidraw boards: drawings kept in Native Note. The scene (Excalidraw's elements) is stored as JSON, and every save
+// Excalidraw boards: space plans, bubble diagrams, adjacency studies and furniture layouts. The scene (Excalidraw's elements) is stored as JSON, and every save
 // also writes a plain-text summary of what's on the board (its text, shapes, labels and arrows) so AI can read it.
 
 import { ConvexError, v } from "convex/values";
@@ -112,15 +112,16 @@ export const setPinned = mutation({
   },
 });
 
-/** What the sidebar's Pinned section shows: pinned scripts and boards, in the order they were pinned */
+/** What the sidebar's Pinned section shows: pinned projects and boards, in the order they were pinned */
 export const pinned = query({
   args: {},
   handler: async (ctx) => {
     await requireUser(ctx);
-    const [videos, boards] = await Promise.all([ctx.db.query("videos").collect(), ctx.db.query("boards").collect()]);
+    const [projects, boards] = await Promise.all([ctx.db.query("projects").collect(), ctx.db.query("boards").collect()]);
     return [
-      ...videos.filter((x) => x.pinnedAt).map((x) => ({ kind: "script" as const, id: x._id as string, title: x.title, format: x.format, pinnedAt: x.pinnedAt! })),
-      ...boards.filter((x) => x.pinnedAt).map((x) => ({ kind: "board" as const, id: x._id as string, title: x.title, format: null, pinnedAt: x.pinnedAt! })),
+      // A pinned Todo list or Journal entry is not a project and has no business in this list
+      ...projects.filter((x) => x.pinnedAt && !x.kind).map((x) => ({ kind: "project" as const, id: x._id as string, title: x.title, type: x.type, pinnedAt: x.pinnedAt! })),
+      ...boards.filter((x) => x.pinnedAt).map((x) => ({ kind: "board" as const, id: x._id as string, title: x.title, type: null, pinnedAt: x.pinnedAt! })),
     ].sort((a, b) => a.pinnedAt - b.pinnedAt);
   },
 });
@@ -181,7 +182,7 @@ export function boardIdOf(ctx: QueryCtx, text: string) {
   return ctx.db.normalizeId("boards", text.trim().replace(/[?#].*$/, "").split("/").filter(Boolean).pop() ?? "");
 }
 
-/** What agents see for a board block in a script: enough to understand the board without another call */
+/** What agents see for a board block in a document: enough to understand the board without another call */
 export async function boardCard(ctx: QueryCtx, text: string) {
   const id = boardIdOf(ctx, text);
   const b = id ? await ctx.db.get(id) : null;
@@ -420,13 +421,13 @@ async function copyInto(ctx: ActionCtx, board: Id<"boards">, fileId: string, url
   await ctx.runMutation(internal.boards.addFileInternal, { id: board, file: { id: fileId, url: stored, mimeType: mimeType || blob.type, storageId } });
 }
 
-/** A picture pasted from another board (its data is already a Native Note link): copy it into this board */
+/** A picture pasted from another board (its data is already one of our own links): copy it into this board */
 export const adoptFile = action({
   args: { id: v.id("boards"), fileId: v.string(), url: v.string(), mimeType: v.string() },
   handler: async (ctx, { id, fileId, url, mimeType }) => {
     if (!(await ctx.auth.getUserIdentity())) throw new ConvexError("Not signed in");
     // Only our own stored files (never fetch arbitrary addresses)
-    if (!url.startsWith(storagePrefix())) throw new ConvexError("Only pictures stored in Native Note can be copied");
+    if (!url.startsWith(storagePrefix())) throw new ConvexError("Only pictures we store ourselves can be copied");
     await copyInto(ctx, id, fileId, url, mimeType);
   },
 });

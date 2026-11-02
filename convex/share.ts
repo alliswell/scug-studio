@@ -5,61 +5,62 @@ import { attachment, blockColor, blockType, comment, textColor } from "./schema"
 import { docBlocks, writeEditedVersion } from "./lib";
 import { boardIdOf } from "./boards";
 
-async function videoBySlug(ctx: QueryCtx, slug: string) {
+async function projectBySlug(ctx: QueryCtx, slug: string) {
   return ctx.db
-    .query("videos")
+    .query("projects")
     .withIndex("by_slug", (q) => q.eq("shareSlug", slug))
     .unique();
 }
 
-async function docOf(ctx: QueryCtx, videoId: Id<"videos">, kind: "main" | "instructions") {
+async function docOf(ctx: QueryCtx, projectId: Id<"projects">, kind: "main" | "tasks") {
   return ctx.db
     .query("documents")
-    .withIndex("by_video", (q) => q.eq("videoId", videoId).eq("kind", kind))
+    .withIndex("by_project", (q) => q.eq("projectId", projectId).eq("kind", kind))
     .first();
 }
 
-/** Everything a share-link viewer can see: this one script and nothing else. */
+/** Everything a share-link viewer can see: this one project and nothing else. */
 export const get = query({
   args: { slug: v.string() },
   handler: async (ctx, { slug }) => {
-    const video = await videoBySlug(ctx, slug);
-    if (!video) return null;
-    const main = await docOf(ctx, video._id, "main");
-    const ins = await docOf(ctx, video._id, "instructions");
+    const project = await projectBySlug(ctx, slug);
+    if (!project) return null;
+    const main = await docOf(ctx, project._id, "main");
+    const tasks = await docOf(ctx, project._id, "tasks");
     const blocks = main ? await docBlocks(ctx, main._id) : [];
-    // Boards shown in the script (title and AI summary; the drawing itself comes from `board`)
+    // Boards shown in the document (title and AI summary; the drawing itself comes from `board`)
     const boards = [];
     for (const b of blocks) {
       const id = b.type === "board" ? boardIdOf(ctx, b.content) : null;
       const row = id ? await ctx.db.get(id) : null;
       if (row) boards.push({ id: row._id as string, title: row.title, summary: row.summary });
     }
+    // The club's name is all a share link ever shows of it — never the address or the notes
+    const club = project.clubId ? await ctx.db.get(project.clubId) : null;
     return {
-      video: {
-        title: video.title,
-        liveDate: video.liveDate,
-        status: video.status,
-        format: video.format,
-        sponsored: video.sponsored ?? "none",
-        captions: video.captions ?? [],
-        canEdit: video.editPasscode !== null,
+      project: {
+        title: project.title,
+        targetDate: project.targetDate,
+        stage: project.stage,
+        type: project.type,
+        clubName: club?.name ?? null,
+        canEdit: project.editPasscode !== null,
       },
       blocks,
-      instructions: ins ? await docBlocks(ctx, ins._id) : [],
+      tasks: tasks ? await docBlocks(ctx, tasks._id) : [],
       boards,
     };
   },
 });
 
-/** A board drawn in a shared script, for share-link viewers (only boards that script shows). */
+/** A board drawn in a shared project, for share-link viewers (only boards that project shows). */
 export const board = query({
   args: { slug: v.string(), id: v.string() },
   handler: async (ctx, { slug, id }) => {
-    const video = await videoBySlug(ctx, slug);
+    const project = await projectBySlug(ctx, slug);
     const boardId = boardIdOf(ctx, id);
-    if (!video || !boardId) return null;
-    const main = await docOf(ctx, video._id, "main");
+    if (!project || !boardId) return null;
+    const main = await docOf(ctx, project._id, "main");
     if (!main) return null;
     const blocks = await ctx.db
       .query("blocks")
@@ -73,22 +74,22 @@ export const board = query({
 });
 
 async function checkPasscode(ctx: QueryCtx, slug: string, passcode: string) {
-  const video = await videoBySlug(ctx, slug);
-  if (!video || video.editPasscode === null || video.editPasscode !== passcode) {
+  const project = await projectBySlug(ctx, slug);
+  if (!project || project.editPasscode === null || project.editPasscode !== passcode) {
     throw new ConvexError("That passcode isn't right.");
   }
-  return video;
+  return project;
 }
 
 export const guestEdit = query({
   args: { slug: v.string(), passcode: v.string(), token: v.string() },
   handler: async (ctx, { slug, passcode, token }) => {
-    const video = await checkPasscode(ctx, slug, passcode);
+    const project = await checkPasscode(ctx, slug, passcode);
     const doc = await ctx.db
       .query("documents")
       .withIndex("by_token", (q) => q.eq("guestToken", token))
       .first();
-    if (!doc || doc.videoId !== video._id || doc.kind !== "edited") return { exists: false as const };
+    if (!doc || doc.projectId !== project._id || doc.kind !== "edited") return { exists: false as const };
     return { exists: true as const, editorName: doc.editorName, blocks: await docBlocks(ctx, doc._id) };
   },
 });
@@ -119,8 +120,8 @@ export const saveGuestEdit = mutation({
   handler: async (ctx, { slug, passcode, token, name, blocks }) => {
     if (token.length < 32) throw new ConvexError("Bad token");
     if (blocks.length > 5000) throw new ConvexError("Too many blocks");
-    const video = await checkPasscode(ctx, slug, passcode);
+    const project = await checkPasscode(ctx, slug, passcode);
     if (blocks.some((b) => b.images?.some((a) => a.url && !/^https?:\/\//i.test(a.url)))) throw new ConvexError("Bad image link");
-    return writeEditedVersion(ctx, video._id, token, name.trim().slice(0, 80) || "Someone", blocks);
+    return writeEditedVersion(ctx, project._id, token, name.trim().slice(0, 80) || "Someone", blocks);
   },
 });

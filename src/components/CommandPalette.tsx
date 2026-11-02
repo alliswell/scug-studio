@@ -5,19 +5,20 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../../convex/_generated/api";
-import { statusOf } from "@/lib/types";
-import { FormatIcon } from "./FormatIcon";
+import { clubStatusOf, stageOf } from "@/lib/types";
+import { TypeIcon } from "./TypeIcon";
+import { STUDIO_PALETTE_EVENT, STUDIO_VIEW_EVENT, openCommandPalette, type View } from "./HomeSidebar";
 import { IconBoard, IconPlus, IconSearch } from "./icons";
 
-/** Ask the switcher to open (e.g. from a button) */
-export const openCommandPalette = () => window.dispatchEvent(new Event("native-note:palette"));
+// The opener lives with the event constants in HomeSidebar; re-exported here because this is
+// where callers look for it.
+export { openCommandPalette };
 
-type View = "home" | "list" | "calendar" | "kanban" | "journal" | "feed" | "library" | "tweet" | "brands" | "boards" | "topics" | "youtube" | "editfeed" | "scratchboards" | "pdfs" | "mymind";
 type Item = {
   key: string;
-  group: "Recent" | "Scripts" | "Journal" | "Boards" | "Views" | "Apps" | "Create";
+  group: "Recent" | "Projects" | "Journal" | "Clubs" | "Boards" | "Views" | "Apps" | "Create";
   title: string;
-  /** Extra words to match on (status, kind) */
+  /** Extra words to match on (stage, kind) */
   words?: string;
   icon: ReactNode;
   right?: ReactNode;
@@ -36,22 +37,22 @@ const svg = (d: ReactNode) => (
 /** The sidebar's Views and Apps, in the same order */
 const PAGES: { view: View; title: string; words: string; icon: ReactNode }[] = [
   { view: "home", title: "Home", words: "dashboard overview start today", icon: svg(<path d="M2.5 7 8 2.5 13.5 7v6.5h-3.75V10h-3.5v3.5H2.5z" />) },
-  { view: "list", title: "Scripts", words: "list all scripts home", icon: svg(<path d="M3 4h10M3 8h10M3 12h7" />) },
-  { view: "calendar", title: "Calendar", words: "schedule dates live", icon: svg(<><rect x="2.5" y="3.5" width="11" height="10" rx="2" /><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" /></>) },
+  { view: "list", title: "Projects", words: "list all projects work build-outs", icon: svg(<path d="M3 4h10M3 8h10M3 12h7" />) },
+  { view: "calendar", title: "Calendar", words: "schedule target dates open dates", icon: svg(<><rect x="2.5" y="3.5" width="11" height="10" rx="2" /><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" /></>) },
   { view: "journal", title: "Journal", words: "journal diary notes entries internal docs", icon: svg(<><path d="M3.25 2.25h8.5a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-8.5z" /><path d="M5.75 2.25v11.5" /></>) },
-  { view: "kanban", title: "Kanban", words: "board pipeline columns status editor posted", icon: svg(<><rect x="2" y="2.5" width="3.5" height="11" rx="1" /><rect x="6.25" y="2.5" width="3.5" height="7.5" rx="1" /><rect x="10.5" y="2.5" width="3.5" height="4.5" rx="1" /></>) },
-  { view: "feed", title: "Feed", words: "updates urgent", icon: svg(<path d="M3 4h10M3 8h10M3 12h10" />) },
-  { view: "mymind", title: "Mymind", words: "ideas bookmarks saved", icon: svg(<><circle cx="5" cy="5" r="2.2" /><circle cx="11" cy="5" r="2.2" /><circle cx="5" cy="11" r="2.2" /><circle cx="11" cy="11" r="2.2" /></>) },
-  { view: "library", title: "Library", words: "assets files footage", icon: svg(<><rect x="2.5" y="2.5" width="4" height="11" rx="1" /><rect x="8" y="2.5" width="4" height="11" rx="1" transform="rotate(-12 10 8)" /></>) },
-  { view: "tweet", title: "Tweet", words: "x twitter post drafts", icon: svg(<path d="M3 3l10 10M13 3L3 13" />) },
-  { view: "brands", title: "Brand deals", words: "sponsors partners sponsorships", icon: svg(<><path d="M8.5 2.5H13.5V7.5L7.5 13.5 2.5 8.5z" /><circle cx="10.75" cy="5.25" r="1" /></>) },
-  { view: "boards", title: "Excalidraw", words: "boards whiteboard drawings", icon: <IconBoard size={16} /> },
-  { view: "topics", title: "Topic opportunities", words: "ideas research youtube outliers keywords", icon: svg(<><path d="M2 12l4-4 2.5 2.5L14 5" /><path d="M10 5h4v4" /></>) },
-  { view: "scratchboards", title: "Scratchboard", words: "drawing board pencil paper sketch short form style whiteboard", icon: svg(<><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><path d="M4.5 10.5c1.2-2.4 2.4-3.6 3.6-1.8s2.2.4 3.4-2" /></>) },
-  { view: "pdfs", title: "PDFs", words: "pdf papers paper reader read documents arxiv research highlight", icon: svg(<><path d="M3.5 1.75h6l3 3v9.5h-9z" /><path d="M9.5 1.75v3h3M5.5 9.25h5M5.5 11.75h3.5" /></>) },
-  { view: "editfeed", title: "Edit Feed", words: "short form shorts reels tiktok edits editor versions review cuts", icon: svg(<><rect x="4.25" y="1.75" width="7.5" height="12.5" rx="1.75" /><path d="M7 6.25v3.5L10 8 7 6.25Z" /></>) },
-  { view: "youtube", title: "YouTube", words: "channel analytics stats views reports dashboard weekly", icon: svg(<><rect x="1.75" y="3.25" width="12.5" height="9.5" rx="2.5" /><path d="M6.75 6v4l3.5-2-3.5-2Z" /></>) },
+  { view: "board", title: "Board", words: "kanban pipeline columns stage install punch open shipped", icon: svg(<><rect x="2" y="2.5" width="3.5" height="11" rx="1" /><rect x="6.25" y="2.5" width="3.5" height="7.5" rx="1" /><rect x="10.5" y="2.5" width="3.5" height="4.5" rx="1" /></>) },
+  { view: "feed", title: "Feed", words: "updates urgent site visits vendor calls", icon: svg(<path d="M3 4h10M3 8h10M3 12h10" />) },
+  { view: "clubs", title: "Clubs", words: "locations neighborhoods spaces network", icon: svg(<><path d="M2.25 6.25h11.5v7.5H2.25z" /><path d="M1.75 6.25 3.5 2.75h9l1.75 3.5M6.5 13.75v-4h3v4" /></>) },
+  { view: "reviews", title: "Reviews", words: "review rounds renders plans elevations mockups redlines approvals marks", icon: svg(<><rect x="2.25" y="2.25" width="11.5" height="11.5" rx="1.5" /><path d="M4.75 5.25h6.5M4.75 7.75h3.5" /><circle cx="10.75" cy="10.75" r="1.75" /></>) },
+  { view: "mymind", title: "References", words: "mymind inspiration ideas bookmarks saved", icon: svg(<><circle cx="5" cy="5" r="2.2" /><circle cx="11" cy="5" r="2.2" /><circle cx="5" cy="11" r="2.2" /><circle cx="11" cy="11" r="2.2" /></>) },
+  { view: "library", title: "Library", words: "assets files photos", icon: svg(<><rect x="2.5" y="2.5" width="4" height="11" rx="1" /><rect x="8" y="2.5" width="4" height="11" rx="1" transform="rotate(-12 10 8)" /></>) },
+  { view: "boards", title: "Excalidraw", words: "boards whiteboard drawings space plans bubble diagrams layouts", icon: <IconBoard size={16} /> },
+  { view: "scratchboards", title: "Scratchboard", words: "drawing board pencil paper sketch whiteboard", icon: svg(<><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><path d="M4.5 10.5c1.2-2.4 2.4-3.6 3.6-1.8s2.2.4 3.4-2" /></>) },
+  { view: "pdfs", title: "PDFs", words: "pdf drawing sets permit sets cutsheets documents read highlight", icon: svg(<><path d="M3.5 1.75h6l3 3v9.5h-9z" /><path d="M9.5 1.75v3h3M5.5 9.25h5M5.5 11.75h3.5" /></>) },
 ];
+
+/** Which PAGES rows sit under Apps rather than Views (the same split as the sidebar) */
+const APP_VIEWS: View[] = ["mymind", "library", "boards", "scratchboards", "pdfs"];
 
 const RECENT_KEY = "palette-recent";
 type Recent = { href: string; at: number };
@@ -62,7 +63,7 @@ const readRecent = (): Recent[] => {
     return [];
   }
 };
-/** Scripts and boards opened lately, newest first (kept on this device) */
+/** Projects, clubs and boards opened lately, newest first (kept on this device) */
 const pushRecent = (href: string) => {
   try {
     const list = [{ href, at: Date.now() }, ...readRecent().filter((r) => r.href !== href)].slice(0, 20);
@@ -145,8 +146,8 @@ function Highlight({ text, hits }: { text: string; hits: number[] }) {
 }
 
 /**
- * ⌘K / Ctrl+K anywhere: jump to any script, board or page, or start a new one. Like Notion's and the Claude app's
- * quick switcher. In a script with words selected, ⌘K still makes a link (the editor handles it first).
+ * ⌘K / Ctrl+K anywhere: jump to any project, club, board or page, or start a new one. Like Notion's and the
+ * Claude app's quick switcher. In a project with words selected, ⌘K still makes a link (the editor handles it first).
  */
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -160,13 +161,13 @@ export function CommandPalette() {
   }, []);
   // Remember what's opened (from here, links, anywhere) for the Recent list
   useEffect(() => {
-    if (/^\/(v|b)\/[^/]+$/.test(pathname)) pushRecent(pathname);
+    if (/^\/(p|b|c)\/[^/]+$/.test(pathname)) pushRecent(pathname);
   }, [pathname]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== "k" || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-      // Words selected while typing in a script or text box: ⌘K is "make a link" there
+      // Words selected while typing in a project or text box: ⌘K is "make a link" there
       const el = document.activeElement as HTMLElement | null;
       const typing = !!el && (el.isContentEditable || el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && !el.closest("[data-command-palette]")));
       const sel = window.getSelection();
@@ -182,34 +183,38 @@ export function CommandPalette() {
       setOpen(true);
     };
     window.addEventListener("keydown", onKey, true);
-    window.addEventListener("native-note:palette", onAsk);
+    window.addEventListener(STUDIO_PALETTE_EVENT, onAsk);
     return () => {
       window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("native-note:palette", onAsk);
+      window.removeEventListener(STUDIO_PALETTE_EVENT, onAsk);
     };
   }, []);
 
-  const videos = useQuery(api.videos.list, warm ? {} : "skip");
+  const projects = useQuery(api.projects.list, warm ? {} : "skip");
+  const clubs = useQuery(api.clubs.list, warm ? {} : "skip");
   const boards = useQuery(api.boards.list, warm ? {} : "skip");
-  const journal = useQuery(api.videos.journal, warm ? {} : "skip");
+  const journal = useQuery(api.projects.journal, warm ? {} : "skip");
   if (!open) return null;
-  return createPortal(<Palette videos={videos} boards={boards} journal={journal} onClose={() => setOpen(false)} />, document.body);
+  return createPortal(<Palette projects={projects} clubs={clubs} boards={boards} journal={journal} onClose={() => setOpen(false)} />, document.body);
 }
 
 function Palette({
-  videos,
+  projects,
+  clubs,
   boards,
   journal,
   onClose,
 }: {
-  videos: ReturnType<typeof useQuery<typeof api.videos.list>>;
+  projects: ReturnType<typeof useQuery<typeof api.projects.list>>;
+  clubs: ReturnType<typeof useQuery<typeof api.clubs.list>>;
   boards: ReturnType<typeof useQuery<typeof api.boards.list>>;
-  journal: ReturnType<typeof useQuery<typeof api.videos.journal>>;
+  journal: ReturnType<typeof useQuery<typeof api.projects.journal>>;
   onClose: () => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const createVideo = useMutation(api.videos.create);
+  const createProject = useMutation(api.projects.create);
+  const createClub = useMutation(api.clubs.create);
   const createBoard = useMutation(api.boards.create);
   const openTodo = useMutation(api.todo.open);
   const [q, setQ] = useState("");
@@ -245,29 +250,53 @@ function Palette({
 
   const goView = useCallback(
     (view: View) => {
-      if (pathname === "/") window.dispatchEvent(new CustomEvent("native-note:view", { detail: view }));
+      if (pathname === "/") window.dispatchEvent(new CustomEvent<View>(STUDIO_VIEW_EVENT, { detail: view }));
       router.push(`/?view=${view}`);
     },
     [pathname, router],
   );
 
   const all = useMemo(() => {
-    const scripts: Item[] = (videos ?? []).map((v) => {
-      const st = statusOf(v.status);
+    const ps: Item[] = (projects ?? []).map((p) => {
+      const st = stageOf(p.stage, p.type);
       return {
-        key: `v:${v._id}`,
-        group: "Scripts",
-        title: v.title.trim() || "Untitled",
-        words: `${st.label} ${v.format === "short" ? "short" : "long"} script`,
-        icon: <FormatIcon format={v.format} size={16} />,
+        key: `p:${p._id}`,
+        group: "Projects",
+        title: p.title.trim() || "Untitled",
+        words: `${st.label} ${p.type} project ${p.clubName ?? "network"}`,
+        icon: <TypeIcon type={p.type} size={16} />,
         right: (
-          <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full" style={{ background: st.dot }} />
+          // The glyph carries the stage; the color is only a second channel
+          <span className="flex items-center gap-1.5" title={`${st.label} (${st.colorName})`}>
+            <span style={{ color: st.hex }} aria-hidden="true">
+              {st.glyph}
+            </span>
             {st.label}
           </span>
         ),
-        href: `/v/${v._id}`,
-        at: v.updatedAt,
+        href: `/p/${p._id}`,
+        at: p.updatedAt,
+      };
+    });
+    const cs: Item[] = (clubs ?? []).map((c) => {
+      const st = clubStatusOf(c.status);
+      return {
+        key: `c:${c._id}`,
+        group: "Clubs",
+        title: c.name.trim() || "Untitled club",
+        words: `club location ${c.neighborhood ?? ""} ${c.city ?? ""} ${st.label}`,
+        icon: (
+          <span style={{ color: st.hex }} aria-hidden="true">
+            {st.glyph}
+          </span>
+        ),
+        right: (
+          <span title={`${st.label} (${st.colorName})`}>
+            {st.label} · {c.activeCount} in flight
+          </span>
+        ),
+        href: `/c/${c._id}`,
+        at: c.updatedAt,
       };
     });
     const js: Item[] = (journal ?? []).map((e) => ({
@@ -277,7 +306,7 @@ function Palette({
       words: `journal entry ${e.preview.slice(0, 120)}`,
       icon: svg(<><path d="M3.25 2.25h8.5a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-8.5z" /><path d="M5.75 2.25v11.5" /></>),
       right: <span>{ago(e.updatedAt)}</span>,
-      href: `/v/${e.id}`,
+      href: `/p/${e.id}`,
       at: e.updatedAt,
     }));
     const bs: Item[] = (boards ?? []).map((b) => ({
@@ -296,11 +325,11 @@ function Palette({
       title: "Todo",
       words: "todo to-do list tasks team checklist app page",
       icon: svg(<><path d="M6 4.25h7.5M6 8h7.5M8.5 11.75h5" /><circle cx="3.25" cy="4.25" r="0.6" /><circle cx="3.25" cy="8" r="0.6" /><circle cx="5.75" cy="11.75" r="0.6" /></>),
-      run: async () => router.push(`/v/${await openTodo()}`),
+      run: async () => router.push(`/p/${await openTodo()}`),
     };
     const pages: Item[] = [todoPage, ...PAGES.map((p): Item => ({
-      key: `p:${p.view}`,
-      group: p.view === "home" || p.view === "list" || p.view === "calendar" || p.view === "kanban" || p.view === "journal" || p.view === "feed" ? "Views" : "Apps",
+      key: `v:${p.view}`,
+      group: APP_VIEWS.includes(p.view) ? "Apps" : "Views",
       title: p.title,
       words: `${p.words} app page`,
       icon: p.icon,
@@ -309,21 +338,32 @@ function Palette({
     }))];
     const create: Item[] = [
       {
-        key: "new-script",
+        key: "new-project",
         group: "Create",
-        title: "New script",
-        words: "create add video",
+        title: "New project",
+        words: "create add build-out digital work",
         icon: <IconPlus size={15} />,
         run: async () => {
-          const id = await createVideo({ format: "long" });
-          router.push(`/v/${id}`);
+          const id = await createProject({ type: "physical" });
+          router.push(`/p/${id}`);
+        },
+      },
+      {
+        key: "new-club",
+        group: "Create",
+        title: "New club",
+        words: "create add location neighborhood space",
+        icon: <IconPlus size={15} />,
+        run: async () => {
+          const id = await createClub({ name: "New club" });
+          router.push(`/c/${id}`);
         },
       },
       {
         key: "new-board",
         group: "Create",
         title: "New board",
-        words: "create add excalidraw whiteboard drawing",
+        words: "create add excalidraw whiteboard drawing space plan",
         icon: <IconPlus size={15} />,
         run: async () => {
           const id = await createBoard({});
@@ -331,23 +371,23 @@ function Palette({
         },
       },
     ];
-    return { scripts, js, bs, pages, create };
-  }, [videos, boards, journal, goView, createVideo, createBoard, router, openTodo]);
+    return { ps, cs, js, bs, pages, create };
+  }, [projects, clubs, boards, journal, goView, createProject, createClub, createBoard, router, openTodo]);
 
   /** What shows: recents and pages when empty; otherwise the best matches, grouped */
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
-    const byHref = new Map([...all.scripts, ...all.js, ...all.bs].map((i) => [i.href!, i]));
+    const byHref = new Map([...all.ps, ...all.cs, ...all.js, ...all.bs].map((i) => [i.href!, i]));
     if (!term) {
       const recents = recent
         .map((r) => byHref.get(r.href))
         .filter((i): i is Item => !!i && i.href !== pathname)
         .slice(0, 6)
         .map((i) => ({ item: { ...i, key: `r:${i.key}`, group: "Recent" as const }, hits: [] as number[] }));
-      // Nothing opened yet: show the latest scripts and boards instead
+      // Nothing opened yet: show the latest projects and boards instead
       const fill = recents.length
         ? []
-        : [...all.scripts.slice(0, 4), ...all.bs.slice(0, 2)].map((i) => ({ item: { ...i, key: `r:${i.key}`, group: "Recent" as const }, hits: [] as number[] }));
+        : [...all.ps.slice(0, 4), ...all.bs.slice(0, 2)].map((i) => ({ item: { ...i, key: `r:${i.key}`, group: "Recent" as const }, hits: [] as number[] }));
       return [...recents, ...fill, ...all.pages.map((item) => ({ item, hits: [] })), ...all.create.map((item) => ({ item, hits: [] }))];
     }
     const scored = (items: Item[], limit: number) =>
@@ -361,7 +401,15 @@ function Palette({
         // Ties go to the one touched most recently
         .sort((a, b) => b.score - a.score || (b.item.at ?? 0) - (a.item.at ?? 0))
         .slice(0, limit);
-    const groups = [scored(all.scripts, 8), scored(all.js, 5), scored(all.bs, 5), scored(all.pages.filter((p) => p.group === "Views"), 4), scored(all.pages.filter((p) => p.group === "Apps"), 6), scored(all.create, 2)];
+    const groups = [
+      scored(all.ps, 8),
+      scored(all.cs, 5),
+      scored(all.js, 5),
+      scored(all.bs, 5),
+      scored(all.pages.filter((p) => p.group === "Views"), 4),
+      scored(all.pages.filter((p) => p.group === "Apps"), 6),
+      scored(all.create, 3),
+    ];
     // The group with the best match comes first
     groups.sort((a, b) => (b[0]?.score ?? -1e9) - (a[0]?.score ?? -1e9));
     return groups.flat();
@@ -394,7 +442,7 @@ function Palette({
     }
   };
 
-  const loading = videos === undefined || boards === undefined;
+  const loading = projects === undefined || boards === undefined;
   return (
     <div
       role="dialog"
@@ -433,7 +481,7 @@ function Palette({
                 setActive(rows.length - 1);
               }
             }}
-            placeholder="Jump to a script, board or page…"
+            placeholder="Jump to a project, club, board or page…"
             aria-label="Search"
             aria-controls="palette-results"
             aria-activedescendant={rows[active] ? `palette-${rows[active].item.key}` : undefined}
@@ -464,7 +512,7 @@ function Palette({
                   </span>
                   {item.right && <span className="shrink-0 text-[12px] text-(--c-t-9a9a9a)">{item.right}</span>}
                   {(item.href ?? item.link) ? (
-                    // Pages, scripts and boards: copy a link to it (shows on the highlighted row)
+                    // Pages, projects, clubs and boards: copy a link to it (shows on the highlighted row)
                     <CopyLink path={(item.href ?? item.link)!} shown={i === active} />
                   ) : (
                     i === active && (

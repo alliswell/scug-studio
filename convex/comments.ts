@@ -36,31 +36,31 @@ function view(c: Doc<"comments">, mine: boolean): CommentView {
   };
 }
 
-async function byVideo(ctx: QueryCtx, videoId: Id<"videos">) {
+async function byProject(ctx: QueryCtx, projectId: Id<"projects">) {
   return ctx.db
     .query("comments")
-    .withIndex("by_video", (q) => q.eq("videoId", videoId))
+    .withIndex("by_project", (q) => q.eq("projectId", projectId))
     .collect();
 }
 
-async function videoBySlug(ctx: QueryCtx, slug: string) {
+async function projectBySlug(ctx: QueryCtx, slug: string) {
   return ctx.db
-    .query("videos")
+    .query("projects")
     .withIndex("by_slug", (q) => q.eq("shareSlug", slug))
     .unique();
 }
 
-async function lineText(ctx: QueryCtx, videoId: Id<"videos">, blockKey: string | null) {
+async function lineText(ctx: QueryCtx, projectId: Id<"projects">, blockKey: string | null) {
   if (!blockKey) return null;
   const main = await ctx.db
     .query("documents")
-    .withIndex("by_video", (q) => q.eq("videoId", videoId).eq("kind", "main"))
+    .withIndex("by_project", (q) => q.eq("projectId", projectId).eq("kind", "main"))
     .first();
-  const ins = await ctx.db
+  const tasks = await ctx.db
     .query("documents")
-    .withIndex("by_video", (q) => q.eq("videoId", videoId).eq("kind", "instructions"))
+    .withIndex("by_project", (q) => q.eq("projectId", projectId).eq("kind", "tasks"))
     .first();
-  for (const d of [main, ins]) {
+  for (const d of [main, tasks]) {
     if (!d) continue;
     const b = await ctx.db
       .query("blocks")
@@ -74,7 +74,7 @@ async function lineText(ctx: QueryCtx, videoId: Id<"videos">, blockKey: string |
 async function insert(
   ctx: MutationCtx,
   args: {
-    videoId: Id<"videos">;
+    projectId: Id<"projects">;
     blockKey: string | null;
     text: string;
     authorName: string | null;
@@ -86,9 +86,9 @@ async function insert(
 ) {
   const now = Date.now();
   const id = await ctx.db.insert("comments", {
-    videoId: args.videoId,
+    projectId: args.projectId,
     blockKey: args.blockKey,
-    quote: await lineText(ctx, args.videoId, args.blockKey),
+    quote: await lineText(ctx, args.projectId, args.blockKey),
     text: args.text.slice(0, MAX_TEXT),
     authorName: args.authorName?.slice(0, 80) ?? null,
     authorId: args.authorId,
@@ -98,29 +98,29 @@ async function insert(
     createdAt: now,
     updatedAt: now,
   });
-  await ctx.db.patch(args.videoId, { updatedAt: now });
-  if (args.attachments?.length) await queueAssetSync(ctx, args.videoId);
+  await ctx.db.patch(args.projectId, { updatedAt: now });
+  if (args.attachments?.length) await queueAssetSync(ctx, args.projectId);
   return id;
 }
 
 // ---------- Team members ----------
 
 export const list = query({
-  args: { videoId: v.id("videos") },
-  handler: async (ctx, { videoId }) => {
+  args: { projectId: v.id("projects") },
+  handler: async (ctx, { projectId }) => {
     const userId = await requireUser(ctx);
-    const rows = await byVideo(ctx, videoId);
+    const rows = await byProject(ctx, projectId);
     return rows.map((c) => view(c, c.authorId === userId));
   },
 });
 
 export const add = mutation({
-  args: { videoId: v.id("videos"), blockKey: v.union(v.string(), v.null()), text: v.string() },
-  handler: async (ctx, { videoId, blockKey, text }) => {
+  args: { projectId: v.id("projects"), blockKey: v.union(v.string(), v.null()), text: v.string() },
+  handler: async (ctx, { projectId, blockKey, text }) => {
     const userId = await requireUser(ctx);
     const user = await ctx.db.get(userId);
     return insert(ctx, {
-      videoId,
+      projectId,
       blockKey,
       text,
       authorName: user?.name || user?.email?.split("@")[0] || null,
@@ -146,8 +146,8 @@ export const moveToLine = mutation({
     await requireUser(ctx);
     const c = await ctx.db.get(id);
     if (!c) throw new ConvexError("Comment not found");
-    const quote = await lineText(ctx, c.videoId, blockKey);
-    if (quote === null) throw new ConvexError("That line isn't in the script");
+    const quote = await lineText(ctx, c.projectId, blockKey);
+    if (quote === null) throw new ConvexError("That line isn't in the project");
     const history = c.keyHistory ?? [];
     await ctx.db.patch(id, {
       blockKey,
@@ -155,7 +155,7 @@ export const moveToLine = mutation({
       keyHistory: c.blockKey && c.blockKey !== blockKey ? [...history.filter((k) => k !== c.blockKey), c.blockKey].slice(-20) : history,
       updatedAt: Date.now(),
     });
-    await queueAssetSync(ctx, c.videoId);
+    await queueAssetSync(ctx, c.projectId);
   },
 });
 
@@ -168,7 +168,7 @@ export const attach = mutation({
     if (!c) throw new ConvexError("Comment not found");
     if (a.url && !/^https?:\/\//i.test(a.url)) throw new ConvexError("Links must start with http:// or https://");
     await ctx.db.patch(id, { attachments: [...c.attachments, a], updatedAt: Date.now() });
-    if (a.kind !== "link") await queueAssetSync(ctx, c.videoId);
+    if (a.kind !== "link") await queueAssetSync(ctx, c.projectId);
   },
 });
 
@@ -180,8 +180,8 @@ export const detach = mutation({
     if (!c) return;
     const gone = c.attachments.filter((a) => a.id === attachmentId);
     await ctx.db.patch(id, { attachments: c.attachments.filter((a) => a.id !== attachmentId), updatedAt: Date.now() });
-    await queueAssetSync(ctx, c.videoId);
-    await releaseFiles(ctx, c.videoId, gone.flatMap((a) => (a.storageId ? [a.storageId] : [])));
+    await queueAssetSync(ctx, c.projectId);
+    await releaseFiles(ctx, c.projectId, gone.flatMap((a) => (a.storageId ? [a.storageId] : [])));
   },
 });
 
@@ -192,8 +192,8 @@ export const remove = mutation({
     const c = await ctx.db.get(id);
     if (!c) return;
     await ctx.db.delete(id);
-    await queueAssetSync(ctx, c.videoId);
-    await releaseFiles(ctx, c.videoId, c.attachments.flatMap((a) => (a.storageId ? [a.storageId] : [])));
+    await queueAssetSync(ctx, c.projectId);
+    await releaseFiles(ctx, c.projectId, c.attachments.flatMap((a) => (a.storageId ? [a.storageId] : [])));
   },
 });
 
@@ -202,19 +202,19 @@ export const remove = mutation({
 export const listShared = query({
   args: { slug: v.string(), token: v.optional(v.string()) },
   handler: async (ctx, { slug, token }) => {
-    const video = await videoBySlug(ctx, slug);
-    if (!video) return [];
-    const rows = await byVideo(ctx, video._id);
+    const project = await projectBySlug(ctx, slug);
+    if (!project) return [];
+    const rows = await byProject(ctx, project._id);
     return rows.map((c) => view(c, !!token && c.guestToken === token));
   },
 });
 
-async function guestVideo(ctx: QueryCtx, slug: string, passcode: string) {
-  const video = await videoBySlug(ctx, slug);
-  if (!video || video.editPasscode === null || video.editPasscode !== passcode) {
+async function guestProject(ctx: QueryCtx, slug: string, passcode: string) {
+  const project = await projectBySlug(ctx, slug);
+  if (!project || project.editPasscode === null || project.editPasscode !== passcode) {
     throw new ConvexError("That passcode isn't right.");
   }
-  return video;
+  return project;
 }
 
 export const addAsGuest = mutation({
@@ -228,9 +228,9 @@ export const addAsGuest = mutation({
   },
   handler: async (ctx, { slug, passcode, token, name, blockKey, text }) => {
     if (token.length < 32) throw new ConvexError("Bad token");
-    const video = await guestVideo(ctx, slug, passcode);
+    const project = await guestProject(ctx, slug, passcode);
     return insert(ctx, {
-      videoId: video._id,
+      projectId: project._id,
       blockKey,
       text,
       authorName: name.trim() || "Guest",
@@ -242,9 +242,9 @@ export const addAsGuest = mutation({
 });
 
 async function ownGuestComment(ctx: MutationCtx, id: Id<"comments">, slug: string, passcode: string, token: string) {
-  const video = await guestVideo(ctx, slug, passcode);
+  const project = await guestProject(ctx, slug, passcode);
   const c = await ctx.db.get(id);
-  if (!c || c.videoId !== video._id || c.guestToken !== token) throw new ConvexError("You can only change your own comments.");
+  if (!c || c.projectId !== project._id || c.guestToken !== token) throw new ConvexError("You can only change your own comments.");
   return c;
 }
 
@@ -271,7 +271,7 @@ export const detachAsGuest = mutation({
   handler: async (ctx, { id, slug, passcode, token, attachmentId }) => {
     const c = await ownGuestComment(ctx, id, slug, passcode, token);
     await ctx.db.patch(id, { attachments: c.attachments.filter((a) => a.id !== attachmentId), updatedAt: Date.now() });
-    await queueAssetSync(ctx, c.videoId);
+    await queueAssetSync(ctx, c.projectId);
   },
 });
 
@@ -280,7 +280,7 @@ export const removeAsGuest = mutation({
   handler: async (ctx, { id, slug, passcode, token }) => {
     const c = await ownGuestComment(ctx, id, slug, passcode, token);
     await ctx.db.delete(id);
-    await queueAssetSync(ctx, c.videoId);
+    await queueAssetSync(ctx, c.projectId);
   },
 });
 
@@ -289,11 +289,11 @@ export const removeAsGuest = mutation({
 /**
  * Posts a comment as an AI agent. Not callable from the browser: run it with
  * `npx convex run comments:addAgent '{...}'` or through the /agent/comment HTTP route.
- * Target the whole script (no line), a line by key, or a line by (part of) its text.
+ * Target the whole project (no line), a line by key, or a line by (part of) its text.
  */
 export const addAgent = internalMutation({
   args: {
-    script: v.string(),
+    project: v.string(),
     text: v.string(),
     agentName: v.optional(v.string()),
     blockKey: v.optional(v.string()),
@@ -301,18 +301,18 @@ export const addAgent = internalMutation({
     /** Links by URL, or files already stored (see agentFiles.ts) */
     attachments: v.optional(v.array(resolvedAttachment)),
   },
-  handler: async (ctx, { script, text, agentName, blockKey, lineContains, attachments }) => {
-    const videoId = ctx.db.normalizeId("videos", script);
-    const video = videoId ? await ctx.db.get(videoId) : await videoBySlug(ctx, script.split("/").pop() ?? script);
-    if (!video) throw new ConvexError("Script not found. Pass its id or share link.");
+  handler: async (ctx, { project: ref, text, agentName, blockKey, lineContains, attachments }) => {
+    const projectId = ctx.db.normalizeId("projects", ref);
+    const project = projectId ? await ctx.db.get(projectId) : await projectBySlug(ctx, ref.split("/").pop() ?? ref);
+    if (!project) throw new ConvexError("Project not found. Pass its id or share link.");
     let key: string | null = blockKey ?? null;
     if (!key && lineContains) {
       const needle = lineContains.toLowerCase();
       const docs = await ctx.db
         .query("documents")
-        .withIndex("by_video", (q) => q.eq("videoId", video._id))
+        .withIndex("by_project", (q) => q.eq("projectId", project._id))
         .collect();
-      for (const d of docs.filter((x) => x.kind === "main" || x.kind === "instructions")) {
+      for (const d of docs.filter((x) => x.kind === "main" || x.kind === "tasks")) {
         const blocks = await ctx.db
           .query("blocks")
           .withIndex("by_document", (q) => q.eq("documentId", d._id))
@@ -329,7 +329,7 @@ export const addAgent = internalMutation({
     const files = [];
     for (const a of attachments ?? []) files.push(await toAttachment(ctx, a));
     return insert(ctx, {
-      videoId: video._id,
+      projectId: project._id,
       blockKey: key,
       text,
       authorName: agentName?.trim() || "Claude",
@@ -338,43 +338,5 @@ export const addAgent = internalMutation({
       guestToken: null,
       attachments: files,
     });
-  },
-});
-
-// ---------- One-time move of comments that used to live inside blocks ----------
-
-export const migrateBlockComments = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    let moved = 0;
-    const blocks = await ctx.db.query("blocks").collect();
-    for (const b of blocks) {
-      const legacy = [
-        ...(b.attachments ?? []).map((a) => ({ text: "", author: null as string | null, createdAt: b._creationTime, attachments: [a] })),
-        ...(b.comments ?? []),
-      ];
-      if (!legacy.length) continue;
-      const doc = await ctx.db.get(b.documentId);
-      if (doc && (doc.kind === "main" || doc.kind === "instructions")) {
-        for (const c of legacy) {
-          await ctx.db.insert("comments", {
-            videoId: b.videoId,
-            blockKey: b.key,
-            quote: b.content.slice(0, 300),
-            text: c.text,
-            authorName: c.author,
-            authorId: null,
-            agent: false,
-            guestToken: null,
-            attachments: c.attachments,
-            createdAt: c.createdAt,
-            updatedAt: c.createdAt,
-          });
-          moved++;
-        }
-      }
-      await ctx.db.patch(b._id, { attachments: undefined, comments: undefined });
-    }
-    return moved;
   },
 });

@@ -7,8 +7,8 @@ import { themeInit } from "@/lib/themeInit";
 const instrument = Instrument_Sans({ variable: "--font-instrument", subsets: ["latin"], weight: ["400", "500", "600"] });
 
 export const metadata: Metadata = {
-  title: "Native Note",
-  description: "Write video scripts in blocks, attach anything, share with a link.",
+  title: "Switchyards Studio",
+  description: "Club build-outs and design work: briefs, drawings, review rounds and what's next.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

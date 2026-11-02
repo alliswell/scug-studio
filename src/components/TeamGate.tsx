@@ -66,7 +66,7 @@ function AuthScreen() {
       <div className="flex w-[360px] flex-col gap-7">
         <div className="flex items-center gap-2 text-(--c-t-1b1b1b)">
           <IconScript size={20} />
-          <span className="text-[16px] font-semibold">Native Note</span>
+          <span className="text-[16px] font-semibold">Switchyards Studio</span>
         </div>
         <div className="flex flex-col gap-2">
           <h1 className="m-0 text-[28px] font-semibold tracking-[-0.01em] text-(--c-t-1b1b1b)">
@@ -74,8 +74,8 @@ function AuthScreen() {
           </h1>
           <p className="m-0 text-[15px] leading-[1.5] text-(--c-t-6b6b6b)">
             {mode === "signIn"
-              ? "Sign in to see your team’s scripts."
-              : "Everyone who signs up works in the same team and sees the same scripts."}
+              ? "Sign in to see your team’s projects."
+              : "Everyone who signs up works in the same team and sees the same projects."}
           </p>
         </div>
         <form key={mode} onSubmit={submit} className="flex flex-col gap-4">

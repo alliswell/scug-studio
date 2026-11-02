@@ -5,26 +5,18 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../../convex/_generated/api";
-import { statusOf } from "@/lib/types";
+import { clubStatusOf, reviewStatusOf, stageOf } from "@/lib/types";
 import { initials, personColor } from "@/lib/people";
-import { linkSegments, mentionOf } from "@/lib/scriptLinks";
-import { FormatIcon } from "./FormatIcon";
-import { openCommandPalette } from "./CommandPalette";
-import { useHomeView, type View } from "./HomeSidebar";
+import { linkSegments, mentionOf } from "@/lib/docLinks";
+import { TypeIcon } from "./TypeIcon";
+import { openCommandPalette, useHomeView, type View } from "./HomeSidebar";
 import { IconSearch } from "./icons";
 
 /**
- * Home: a search box that opens the ⌘K switcher, then what matters right now: anything urgent,
- * scripts in production, what goes live next, the YouTube channel, the latest updates and the best
- * topic ideas. Everything is read from the same queries the other pages use.
+ * Home: a search box that opens the ⌘K switcher, then what matters right now: the shared Todo list,
+ * anything urgent, the work in flight, what lands next, where each club stands and which review
+ * rounds are waiting on an answer. Everything is read from the same queries the other pages use.
  */
-
-/** [id, title, publishedAt, seconds, views, likes, comments], as in public/data/youtube.json */
-type YTRow = [string, string, string, number, number, number, number];
-type YTData = { updatedAt: string; channel: { subscribers: number; views: number; videos: number }; videos: YTRow[] };
-
-const fmt = (n: number) =>
-  n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 1 : 2).replace(/\.?0+$/, "")}M` : n >= 1e4 ? `${Math.round(n / 1e3)}K` : n >= 1e3 ? `${(n / 1e3).toFixed(1).replace(/\.0$/, "")}K` : String(n);
 
 const ago = (t: number) => {
   const s = Math.max(0, (Date.now() - t) / 1000);
@@ -47,19 +39,13 @@ function dayLabel(iso: string, today: string, tomorrow: string) {
 export function HomeDashboard() {
   const { setView } = useHomeView();
   const me = useQuery(api.users.me);
-  const videos = useQuery(api.videos.list);
+  const projects = useQuery(api.projects.list);
+  const clubs = useQuery(api.clubs.list);
+  const reviews = useQuery(api.reviews.list, {});
   const feed = useQuery(api.updates.feed, { limit: 30 });
-  const topics = useQuery(api.topics.list);
-  const [yt, setYt] = useState<YTData | null>(null);
   const [now, setNow] = useState<Date | null>(null);
 
-  useEffect(() => {
-    setNow(new Date());
-    fetch("/data/youtube.json", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then(setYt)
-      .catch(() => {});
-  }, []);
+  useEffect(() => setNow(new Date()), []);
 
   const go = (v: View) => {
     setView(v);
@@ -76,20 +62,27 @@ export function HomeDashboard() {
   const today = now ? localIso(now) : "";
   const tomorrow = now ? localIso(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)) : "";
 
-  const inProduction = (videos ?? [])
-    .filter((v) => statusOf(v.status).value === "inProduction")
+  // Real work, in either pipeline: past the idea stage and not finished
+  const inProgress = (projects ?? [])
+    .filter((p) => {
+      const st = stageOf(p.stage, p.type);
+      return !st.quiet && !st.terminal;
+    })
     .sort((a, b) => b.updatedAt - a.updatedAt);
-  const comingUp = (videos ?? [])
-    .filter((v) => v.liveDate && v.liveDate >= today && statusOf(v.status).value !== "done")
-    .sort((a, b) => a.liveDate!.localeCompare(b.liveDate!));
+  const comingUp = (projects ?? [])
+    .filter((p) => p.targetDate && p.targetDate >= today && !stageOf(p.stage, p.type).terminal)
+    .sort((a, b) => a.targetDate!.localeCompare(b.targetDate!));
   const urgent = (feed ?? []).filter((u) => u.urgent).sort((a, b) => b.happenedAt - a.happenedAt);
   const latest = (feed ?? []).filter((u) => !u.urgent).slice(0, 5);
-  const ideas = (topics ?? []).filter((t) => t.status === "new" || t.status === "saved").slice(0, 5);
+  // Rounds nobody has signed off or redlined yet: the ones that stall a project
+  const waiting = (reviews ?? [])
+    .filter((r) => r.status === "inReview" || r.status === "changesRequested")
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 
   return (
     <div className="mx-auto max-w-[960px] px-5 pb-28">
       <h1 className="m-0 pt-[9vh] text-center text-[30px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">
-        {me === undefined ? " " : greeting}
+        {me === undefined ? " " : greeting}
       </h1>
       <button
         type="button"
@@ -97,7 +90,7 @@ export function HomeDashboard() {
         className="mx-auto mt-6 flex h-12 w-full max-w-[560px] items-center gap-3 rounded-xl bg-(--c-b-ffffff) px-4 text-left text-[15px] text-(--c-t-9a9a9a) shadow-[0_1px_2px_rgba(0,0,0,0.04)] ring-1 ring-(--c-l-e3e3e0) transition-shadow hover:ring-(--c-l-c9c9c9)"
       >
         <IconSearch size={16} />
-        <span className="flex-1">Search Native Note</span>
+        <span className="flex-1">Search Switchyards Studio</span>
         <kbd className="hidden font-sans text-[12px] tracking-wide text-(--c-t-b0b0b0) sm:inline">⌘K</kbd>
       </button>
 
@@ -106,56 +99,114 @@ export function HomeDashboard() {
       {urgent.length > 0 && (
         <Section className="mt-12" title="Needs attention" count={urgent.length} tone="urgent" more={{ label: "Feed", run: () => go("feed") }}>
           {urgent.slice(0, 5).map((u) => (
-            <Row key={u.id} href={`/v/${u.videoId}`} right={ago(u.happenedAt)}>
-              <span className="h-[7px] w-[7px] shrink-0 rounded-full bg-(--c-t-b42318)" aria-hidden="true" />
+            <Row key={u.id} href={`/p/${u.projectId}`} right={ago(u.happenedAt)}>
+              <span className="shrink-0 text-(--c-t-b42318)" aria-hidden="true">
+                ✕
+              </span>
               <span className="truncate text-(--c-t-1b1b1b)">{u.title}</span>
-              <span className="hidden truncate text-(--c-t-9a9a9a) sm:inline">{u.videoTitle || "Untitled"}</span>
+              <span className="hidden truncate text-(--c-t-9a9a9a) sm:inline">{u.projectTitle || "Untitled"}</span>
             </Row>
           ))}
         </Section>
       )}
 
       <div className={`grid grid-cols-1 gap-x-14 gap-y-12 md:grid-cols-2 ${urgent.length ? "mt-12" : "mt-14"}`}>
-        <Section title="In production" count={videos ? inProduction.length : undefined} more={{ label: "Scripts", run: () => go("list") }}>
-          {videos === undefined ? (
+        <Section title="In progress" count={projects ? inProgress.length : undefined} more={{ label: "Projects", run: () => go("list") }}>
+          {projects === undefined ? (
             <Loading />
-          ) : inProduction.length === 0 ? (
-            <Empty>Nothing in production.</Empty>
+          ) : inProgress.length === 0 ? (
+            <Empty>Nothing in flight.</Empty>
           ) : (
-            inProduction.slice(0, 6).map((v) => (
-              <Row key={v._id} href={`/v/${v._id}`} right={v.liveDate && now ? dayLabel(v.liveDate, today, tomorrow) : undefined}>
-                <span className="flex w-4 shrink-0 justify-center text-(--c-t-8a8a8a)">
-                  <FormatIcon format={v.format} size={14} />
-                </span>
-                <span className={`truncate ${v.title ? "text-(--c-t-1b1b1b)" : "text-(--c-t-9a9a9a)"}`}>{v.title || "Untitled"}</span>
-                {v.editedCount > 0 && (
-                  <span className="shrink-0 rounded-full bg-(--c-b-fdecea) px-2 py-px text-[11px] font-medium text-(--c-t-b42318)">Edited</span>
-                )}
-              </Row>
-            ))
-          )}
-        </Section>
-
-        <Section title="Coming up" more={{ label: "Calendar", run: () => go("calendar") }}>
-          {videos === undefined || !now ? (
-            <Loading />
-          ) : comingUp.length === 0 ? (
-            <Empty>Nothing scheduled.</Empty>
-          ) : (
-            comingUp.slice(0, 6).map((v) => {
-              const st = statusOf(v.status);
+            inProgress.slice(0, 6).map((p) => {
+              const st = stageOf(p.stage, p.type);
               return (
-                <Row key={v._id} href={`/v/${v._id}`} right={<span className="text-(--c-t-6b6b6b)">{dayLabel(v.liveDate!, today, tomorrow)}</span>}>
-                  <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: st.dot }} title={st.label} aria-label={st.label} />
-                  <span className={`truncate ${v.title ? "text-(--c-t-1b1b1b)" : "text-(--c-t-9a9a9a)"}`}>{v.title || "Untitled"}</span>
+                <Row key={p._id} href={`/p/${p._id}`} right={p.targetDate && now ? dayLabel(p.targetDate, today, tomorrow) : st.label}>
+                  <span className="flex w-4 shrink-0 justify-center text-(--c-t-8a8a8a)">
+                    <TypeIcon type={p.type} size={14} />
+                  </span>
+                  <span className={`truncate ${p.title ? "text-(--c-t-1b1b1b)" : "text-(--c-t-9a9a9a)"}`}>{p.title || "Untitled"}</span>
+                  <span className="shrink-0" style={{ color: st.hex }} title={`${st.label} (${st.colorName})`} aria-label={st.label}>
+                    {st.glyph}
+                  </span>
+                  {p.openMarks > 0 && (
+                    <span className="shrink-0 rounded-full bg-(--c-b-fdecea) px-2 py-px text-[11px] font-medium text-(--c-t-b42318)">
+                      {p.openMarks} open {p.openMarks === 1 ? "mark" : "marks"}
+                    </span>
+                  )}
                 </Row>
               );
             })
           )}
         </Section>
 
-        <Section title="YouTube" more={{ label: "Open", run: () => go("youtube") }}>
-          {yt && now ? <YouTubeSummary data={yt} now={now} /> : <Loading />}
+        <Section title="Coming up" more={{ label: "Calendar", run: () => go("calendar") }}>
+          {projects === undefined || !now ? (
+            <Loading />
+          ) : comingUp.length === 0 ? (
+            <Empty>Nothing scheduled.</Empty>
+          ) : (
+            comingUp.slice(0, 6).map((p) => {
+              const st = stageOf(p.stage, p.type);
+              return (
+                <Row key={p._id} href={`/p/${p._id}`} right={<span className="text-(--c-t-6b6b6b)">{dayLabel(p.targetDate!, today, tomorrow)}</span>}>
+                  <span className="shrink-0" style={{ color: st.hex }} title={`${st.label} (${st.colorName})`} aria-label={st.label}>
+                    {st.glyph}
+                  </span>
+                  <span className={`truncate ${p.title ? "text-(--c-t-1b1b1b)" : "text-(--c-t-9a9a9a)"}`}>{p.title || "Untitled"}</span>
+                </Row>
+              );
+            })
+          )}
+        </Section>
+
+        <Section title="Clubs" count={clubs ? clubs.length : undefined} more={{ label: "All clubs", run: () => go("clubs") }}>
+          {clubs === undefined ? (
+            <Loading />
+          ) : clubs.length === 0 ? (
+            <Empty>No clubs yet.</Empty>
+          ) : (
+            clubs.slice(0, 6).map((c) => {
+              const st = clubStatusOf(c.status);
+              return (
+                <Row
+                  key={c._id}
+                  href={`/c/${c._id}`}
+                  right={c.activeCount ? `${c.activeCount} in flight` : <span className="text-(--c-t-b0b0b0)">nothing in flight</span>}
+                >
+                  <span className="shrink-0" style={{ color: st.hex }} title={`${st.label} (${st.colorName})`} aria-label={st.label}>
+                    {st.glyph}
+                  </span>
+                  <span className="truncate text-(--c-t-1b1b1b)">{c.name || "Untitled club"}</span>
+                  <span className="hidden truncate text-(--c-t-9a9a9a) sm:inline">{st.label}</span>
+                </Row>
+              );
+            })
+          )}
+        </Section>
+
+        <Section title="Waiting on you" count={reviews ? waiting.length : undefined} more={{ label: "Reviews", run: () => go("reviews") }}>
+          {reviews === undefined ? (
+            <Loading />
+          ) : waiting.length === 0 ? (
+            <Empty>No rounds waiting.</Empty>
+          ) : (
+            waiting.slice(0, 6).map((r) => {
+              const st = reviewStatusOf(r.status);
+              return (
+                <Row key={r._id} onClick={() => go("reviews")} right={ago(r.updatedAt)}>
+                  <span className="shrink-0" style={{ color: st.hex }} title={`${st.label} (${st.colorName})`} aria-label={st.label}>
+                    {st.glyph}
+                  </span>
+                  <span className="truncate text-(--c-t-1b1b1b)">{r.title || "Untitled"}</span>
+                  <span className="hidden shrink-0 text-(--c-t-9a9a9a) sm:inline">v{r.roundCount}</span>
+                  <span className="hidden truncate text-(--c-t-9a9a9a) sm:inline">{r.projectTitle ?? r.clubName ?? ""}</span>
+                  {r.openMarks > 0 && (
+                    <span className="shrink-0 rounded-full bg-(--c-b-fdecea) px-2 py-px text-[11px] font-medium text-(--c-t-b42318)">{r.openMarks} open</span>
+                  )}
+                </Row>
+              );
+            })
+          )}
         </Section>
 
         <Section title="Latest updates" more={{ label: "Feed", run: () => go("feed") }}>
@@ -165,84 +216,16 @@ export function HomeDashboard() {
             <Empty>No updates yet.</Empty>
           ) : (
             latest.map((u) => (
-              <Row key={u.id} href={`/v/${u.videoId}`} right={ago(u.happenedAt)}>
+              <Row key={u.id} href={`/p/${u.projectId}`} right={ago(u.happenedAt)}>
                 <span className="min-w-0 truncate">
                   <span className="text-(--c-t-1b1b1b)">{u.title}</span>
-                  <span className="text-(--c-t-9a9a9a)"> · {u.videoTitle || "Untitled"}</span>
+                  <span className="text-(--c-t-9a9a9a)"> · {u.projectTitle || "Untitled"}</span>
                 </span>
               </Row>
             ))
           )}
         </Section>
-
-        <Section title="Topic ideas" more={{ label: "All topics", run: () => go("topics") }}>
-          {topics === undefined ? (
-            <Loading />
-          ) : ideas.length === 0 ? (
-            <Empty>No topic ideas yet.</Empty>
-          ) : (
-            ideas.map((t) => (
-              <Row key={t.id} onClick={() => go("topics")} right={t.category}>
-                <span className="w-7 shrink-0 text-[13px] font-semibold tabular-nums text-(--c-t-1b1b1b)" title="Opportunity score">
-                  {t.score}
-                </span>
-                <span className="truncate text-(--c-t-1b1b1b)">{t.title}</span>
-              </Row>
-            ))
-          )}
-        </Section>
       </div>
-    </div>
-  );
-}
-
-/** Channel totals, views of the last 12 weeks' uploads (by the week they came out), and the newest videos */
-function YouTubeSummary({ data, now }: { data: YTData; now: Date }) {
-  const vids = data.videos.map(([id, title, published, , views]) => ({ id, title, published: new Date(published), views }));
-  const monday = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7)));
-  const thisWeek = monday(now);
-  const weeks = Array.from({ length: 12 }, (_, i) => {
-    const start = new Date(thisWeek);
-    start.setUTCDate(start.getUTCDate() - 7 * (11 - i));
-    const key = start.toISOString().slice(0, 10);
-    const inWeek = vids.filter((v) => monday(v.published).toISOString().slice(0, 10) === key);
-    return { key, start, views: inWeek.reduce((s, v) => s + v.views, 0), count: inWeek.length };
-  });
-  const max = Math.max(1, ...weeks.map((w) => w.views));
-  const month = vids.filter((v) => now.getTime() - v.published.getTime() < 30 * 86400000);
-  const newest = [...vids].sort((a, b) => b.published.getTime() - a.published.getTime()).slice(0, 3);
-  return (
-    <div>
-      <div className="flex flex-wrap gap-x-8 gap-y-2 px-2">
-        <Stat value={fmt(data.channel.subscribers)} label="subscribers" />
-        <Stat value={fmt(month.reduce((s, v) => s + v.views, 0))} label={`views on ${month.length} video${month.length === 1 ? "" : "s"} this month`} />
-      </div>
-      <div className="mt-4 flex h-16 items-end gap-1 px-2" aria-label="Views of each week's uploads, last 12 weeks" role="img">
-        {weeks.map((w, i) => (
-          <div
-            key={w.key}
-            className={`flex-1 rounded-t-[3px] ${i === weeks.length - 1 ? "bg-(--c-b-1b1b1b)" : "bg-(--c-b-dcdcdc)"}`}
-            style={{ height: w.views ? `${Math.max(4, (w.views / max) * 100)}%` : 2 }}
-            title={`Week of ${w.start.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })}: ${w.count} video${w.count === 1 ? "" : "s"}, ${w.views.toLocaleString()} views`}
-          />
-        ))}
-      </div>
-      <div className="mt-3">
-        {newest.map((v) => (
-          <Row key={v.id} href={`https://www.youtube.com/watch?v=${v.id}`} external right={fmt(v.views)}>
-            <span className="truncate text-(--c-t-1b1b1b)">{v.title}</span>
-          </Row>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Stat({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="flex items-baseline gap-1.5">
-      <span className="text-[24px] font-semibold tracking-[-0.01em] text-(--c-t-1b1b1b)">{value}</span>
-      <span className="text-[13px] text-(--c-t-737373)">{label}</span>
     </div>
   );
 }
@@ -353,7 +336,7 @@ function TodoSection({ className = "" }: { className?: string }) {
   const router = useRouter();
   const [draft, setDraft] = useState("");
   const [showAll, setShowAll] = useState(false);
-  const open = async () => router.push(`/v/${todo?.id ?? (await openM())}`);
+  const open = async () => router.push(`/p/${todo?.id ?? (await openM())}`);
   const lines = (todo?.lines ?? []).filter((l) => l.content.trim() || l.files);
   const LIMIT = 12;
   const shown = showAll ? lines : lines.slice(0, LIMIT);
@@ -399,7 +382,7 @@ function TodoSection({ className = "" }: { className?: string }) {
                 <button type="button" onClick={() => void open()} className="flex min-w-0 flex-1 items-start gap-2.5 text-left">
                   <span className={`min-w-0 flex-1 ${done ? "text-(--c-t-9a9a9a) line-through decoration-(--c-t-c4c4c4)" : "text-(--c-t-1b1b1b)"}`}>
                     {l.content.trim() ? (
-                      <TodoText text={l.content} onOpenScript={(id) => router.push(`/v/${id}`)} />
+                      <TodoText text={l.content} onOpenProject={(id) => router.push(`/p/${id}`)} />
                     ) : (
                       <span className="text-(--c-t-9a9a9a)">{l.files === 1 ? "1 file" : `${l.files} files`}</span>
                     )}
@@ -455,8 +438,8 @@ function TodoSection({ className = "" }: { className?: string }) {
   );
 }
 
-/** A to-do's words on Home: bold and links as text, mentioned scripts as pills that open them */
-function TodoText({ text, onOpenScript }: { text: string; onOpenScript: (id: string) => void }) {
+/** A to-do's words on Home: bold and links as text, mentioned projects as pills that open them */
+function TodoText({ text, onOpenProject }: { text: string; onOpenProject: (id: string) => void }) {
   const segs = linkSegments(text.replace(/\n/g, " "));
   if (!segs) return <>{text.replace(/\n/g, " ")}</>;
   return (
@@ -469,16 +452,16 @@ function TodoText({ text, onOpenScript }: { text: string; onOpenScript: (id: str
               key={i}
               role="link"
               tabIndex={0}
-              className="script-pill"
+              className="doc-pill"
               onClick={(e) => {
                 e.stopPropagation();
-                onOpenScript(id);
+                onOpenProject(id);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.stopPropagation();
                   e.preventDefault();
-                  onOpenScript(id);
+                  onOpenProject(id);
                 }
               }}
             >

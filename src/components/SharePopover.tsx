@@ -6,35 +6,35 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { randomPasscode } from "@/lib/util";
 import { IconCopy, IconGlobe, IconLock, IconRefresh, IconShare, IconX } from "./icons";
-import { primaryButton, topButton } from "./ScriptLayout";
+import { primaryButton, topButton } from "./PageLayout";
 
 export function SharePopover({
-  videoId,
+  projectId,
   shareSlug,
   passcode,
   getText,
   icon,
   align = "right",
 }: {
-  videoId: string;
+  projectId: string;
   shareSlug: string;
   passcode: string | null;
-  /** The script as plain text, for "Copy all text" */
+  /** The document as plain text, for "Copy all text" */
   getText?: () => string;
   /** Show as an icon button (in the sidebar) instead of the "Share" button */
   icon?: boolean;
   /** Which edge the popover lines up with */
   align?: "left" | "right";
 }) {
-  const update = useMutation(api.videos.update);
-  const resetLink = useMutation(api.videos.resetShareLink);
+  const update = useMutation(api.projects.update);
+  const resetLink = useMutation(api.projects.resetShareLink);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [code, setCode] = useState("");
   const [origin, setOrigin] = useState("");
   const ref = useRef<HTMLDivElement>(null);
-  const id = videoId as Id<"videos">;
+  const id = projectId as Id<"projects">;
 
   useEffect(() => setOrigin(window.location.origin), []);
   useEffect(() => {
@@ -79,11 +79,11 @@ export function SharePopover({
       {open && (
         <div
           role="dialog"
-          aria-label="Share this script"
+          aria-label="Share this project"
           className={`absolute ${align === "left" ? "-left-10" : "right-0"} top-11 z-40 flex w-[400px] max-w-[calc(100vw-32px)] flex-col gap-4 rounded-xl border border-(--c-l-ebebeb) bg-(--c-b-ffffff) p-5 shadow-[0_12px_32px_rgba(0,0,0,0.10),0_2px_6px_rgba(0,0,0,0.05)]`}
         >
           <div className="flex items-center justify-between">
-            <h2 className="m-0 text-[16px] font-semibold text-(--c-t-1b1b1b)">Share this script</h2>
+            <h2 className="m-0 text-[16px] font-semibold text-(--c-t-1b1b1b)">Share this project</h2>
             <button
               type="button"
               onClick={() => setOpen(false)}
@@ -122,11 +122,11 @@ export function SharePopover({
               className={`${topButton} h-10 w-full justify-center`}
             >
               <IconCopy />
-              <span>{copied === "text" ? "Copied the whole script" : "Copy all text"}</span>
+              <span>{copied === "text" ? "Copied the whole document" : "Copy all text"}</span>
             </button>
           )}
           <p className="m-0 text-[13px] leading-[1.5] text-(--c-t-737373)">
-            This link opens only this script. People who have it can&apos;t see your other scripts or your home page.
+            This link opens only this project. People who have it can&apos;t see your other projects or your home page.
           </p>
 
           <div className="flex flex-col gap-2.5 border-t border-(--c-l-ebebeb) pt-4">

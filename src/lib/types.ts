@@ -94,7 +94,9 @@ export const typeLabel = (t: string) => PROJECT_TYPES.find((x) => x.value === t)
  * only one. `hex` and `colorName` travel together so a color is always nameable in text.
  */
 export type Stage = {
-  value: string;
+  /** Typed as the union, not `string`, so a stage read off a pipeline can be passed
+   *  straight to a mutation without a cast at every call site. */
+  value: ProjectStage;
   label: string;
   /** Reads without color. Filled = further along. */
   glyph: string;

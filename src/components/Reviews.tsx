@@ -1,55 +1,82 @@
 "use client";
 
 import { useMutation, useQuery } from "convex/react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../../convex/_generated/api";
-import type { Id } from "../../convex/_generated/dataModel";
+import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { uploadToUrl } from "@/lib/upload";
+import { MARK_KINDS, REVIEW_FILE_ACCEPT, REVIEW_STATUSES, isPdfSheet, isReviewSheet, markKindOf, reviewStatusOf, type MarkKind, type ReviewStatus } from "@/lib/types";
 import { IconTrash, IconUpload, IconX } from "./icons";
+import { SheetView, type PinPoint, type SheetMark } from "./SheetView";
 
-type Status = "editing" | "ready" | "posted" | "archived";
-const COLUMNS: { value: Status; label: string; dot: string }[] = [
-  { value: "editing", label: "Editing", dot: "#d97706" },
-  { value: "ready", label: "Ready to post", dot: "#2f6fed" },
-  { value: "posted", label: "Posted", dot: "#15803d" },
-];
+/** The board's columns. "Dropped" is not one of them — it lives behind the archive button. */
+const COLUMNS = REVIEW_STATUSES.filter((s) => s.value !== "archived");
 
-type Row = NonNullable<ReturnType<typeof useQuery<typeof api.editFeed.list>>>[number];
+type ReviewRow = Doc<"reviews"> & {
+  thumbUrl: string | null;
+  fileCount: number;
+  openMarks: number;
+  projectTitle: string | null;
+  clubName: string | null;
+};
+type SheetFile = { url: string | null; mime: string | null; name: string | null };
+type Round = { _id: Id<"reviewRounds">; number: number; note: string; by: string | null; agent: boolean; createdAt: number; files: SheetFile[] };
+type Mark = Doc<"reviewMarks"> & { attachments: Doc<"reviewRounds">["files"] };
+type SheetArg = { storageId: Id<"_storage">; mime: string; name: string };
 
 const ago = (t: number) => {
   const s = Math.round((Date.now() - t) / 1000);
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  const d = new Date(t);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 };
-const clock = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+
+/** The status, as a glyph and a word. Never the color on its own. */
+function StatusMark({ status, size = 13 }: { status: string; size?: number }) {
+  const s = reviewStatusOf(status);
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span style={{ color: s.hex, fontSize: size }} className="leading-none" title={`${s.label} (${s.colorName})`} aria-hidden="true">
+        {s.glyph}
+      </span>
+      {s.label}
+    </span>
+  );
+}
 
 /**
- * Edit Feed: short-form videos being edited. Agents add a cut (v1); you watch it, comment (at a moment if you
- * like) and press Request edits; the agent uploads v2, v3… Videos move through Editing, Ready to post, Posted.
+ * Reviews: sets of visuals — renders, floor plans, elevations, finish boards — carried through
+ * numbered rounds. A designer posts a round; you open it, pin marks to the sheet itself and press
+ * Request changes; the next round answers them.
  */
-export function EditFeed() {
-  const videos = useQuery(api.editFeed.list);
-  const update = useMutation(api.editFeed.update);
+export function Reviews() {
+  const reviews = useQuery(api.reviews.list, {});
+  const update = useMutation(api.reviews.update);
   const [open, setOpen] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
-  const [over, setOver] = useState<Status | null>(null);
+  const [over, setOver] = useState<ReviewStatus | null>(null);
   const [showArchive, setShowArchive] = useState(false);
-  const archived = (videos ?? []).filter((v) => v.status === "archived");
+  const rows: ReviewRow[] | undefined = reviews;
+  const archived = (rows ?? []).filter((r) => r.status === "archived");
 
-  // ?video=<id> (a link an agent shared) opens that video
+  // ?review=<id> (the link an agent shares) opens that review.
+  // ?project=<id> arrives from a project's Visuals tab: a new review started here attaches to it.
+  const [forProject, setForProject] = useState<Id<"projects"> | null>(null);
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("video");
+    const q = new URLSearchParams(window.location.search);
+    const id = q.get("review");
     if (id) setOpen(id);
+    const p = q.get("project");
+    if (p) setForProject(p as Id<"projects">);
   }, []);
-  const openVideo = (id: string | null) => {
+  const forProjectTitle = forProject ? ((rows ?? []).find((r) => r.projectId === forProject)?.projectTitle ?? null) : null;
+  const openReview = (id: string | null) => {
     setOpen(id);
     const u = new URL(window.location.href);
-    if (id) u.searchParams.set("video", id);
-    else u.searchParams.delete("video");
+    if (id) u.searchParams.set("review", id);
+    else u.searchParams.delete("review");
     window.history.replaceState(null, "", u);
   };
 
@@ -57,14 +84,18 @@ export function EditFeed() {
     <div className="mx-auto max-w-[1180px]">
       <div className="mb-6 flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1">
-          <h1 className="m-0 text-[28px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">Edit Feed</h1>
-          <p className="m-0 mt-1 text-[14px] text-(--c-t-737373)">Short-form cuts in review. Comment, request edits, and each new cut comes back as the next version.</p>
+          <h1 className="m-0 text-[28px] font-semibold tracking-[-0.015em] text-(--c-t-1b1b1b)">Reviews</h1>
+          <p className="m-0 mt-1 text-[14px] text-(--c-t-737373)">
+            {forProject
+              ? `New sheets put up here go on ${forProjectTitle ?? "the project you came from"}.`
+              : "Visuals under review. Pin marks to the sheet, request changes, and the next round comes back as v2."}
+          </p>
         </div>
         <button
           type="button"
           onClick={() => setShowArchive(!showArchive)}
           aria-pressed={showArchive}
-          title={showArchive ? "Back to the board" : "Archived videos"}
+          title={showArchive ? "Back to the board" : "Dropped reviews"}
           className={`inline-flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium ring-1 ${
             showArchive ? "bg-(--c-b-1b1b1b) text-(--c-on-ink) ring-transparent" : "text-(--c-t-6b6b6b) ring-(--c-l-e3e3e0) hover:text-(--c-t-1b1b1b)"
           }`}
@@ -72,28 +103,30 @@ export function EditFeed() {
           <ArchiveIcon />
           {archived.length > 0 && <span className="tabular-nums">{archived.length}</span>}
         </button>
-        <UploadButton label="Upload video" onDone={(id) => id && openVideo(id)} />
+        <SheetUpload label="New review" projectId={forProject ?? undefined} onDone={(id) => id && openReview(id)} />
       </div>
 
-      {showArchive && videos !== undefined && (
+      {showArchive && rows !== undefined && (
         <div>
           <div className="mb-3 flex items-center gap-2">
-            <h2 className="m-0 text-[17px] font-semibold text-(--c-t-1b1b1b)">Archived</h2>
-            <span className="text-[13px] text-(--c-t-9a9a9a)">Videos you dropped. The comments say why, so agents can learn from them.</span>
+            <h2 className="m-0 text-[17px] font-semibold text-(--c-t-1b1b1b)">Dropped</h2>
+            <span className="text-[13px] text-(--c-t-9a9a9a)">Directions you walked away from. The marks say why.</span>
           </div>
           {archived.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-(--c-l-dcdcdc) py-12 text-center text-[13.5px] text-(--c-t-9a9a9a)">Nothing archived yet. Open a video and press the archive icon.</div>
+            <div className="rounded-2xl border border-dashed border-(--c-l-dcdcdc) py-12 text-center text-[13.5px] text-(--c-t-9a9a9a)">
+              Nothing dropped yet. Open a review and press the archive icon.
+            </div>
           ) : (
             <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-              {archived.map((v) => (
-                <Card key={v.id} v={v} dragging={false} onOpen={() => openVideo(v.id)} onDragStart={(e) => e.preventDefault()} onDragEnd={() => {}} />
+              {archived.map((r) => (
+                <Card key={r._id} r={r} dragging={false} onOpen={() => openReview(r._id)} onDragStart={(e) => e.preventDefault()} onDragEnd={() => {}} />
               ))}
             </div>
           )}
         </div>
       )}
 
-      {showArchive ? null : videos === undefined ? (
+      {showArchive ? null : rows === undefined ? (
         <div className="grid gap-4 md:grid-cols-3">
           {COLUMNS.map((c) => (
             <div key={c.value} className="h-[220px] animate-pulse rounded-2xl bg-(--c-b-ececea)" />
@@ -103,9 +136,9 @@ export function EditFeed() {
         <div className="-mx-5 overflow-x-auto px-5 pb-4 max-md:snap-x max-md:snap-mandatory">
           <div className="flex min-w-max items-start gap-4 md:grid md:min-w-0 md:grid-cols-3">
             {COLUMNS.map((col) => {
-              const list = videos.filter((v) => v.status === col.value);
+              const list = rows.filter((r) => r.status === col.value);
               const isOver = over === col.value && !!dragging;
-              const posted = col.value === "posted";
+              const done = col.value === "approved";
               return (
                 <section
                   key={col.value}
@@ -120,31 +153,34 @@ export function EditFeed() {
                   }}
                   onDrop={(e) => {
                     e.preventDefault();
-                    const id = e.dataTransfer.getData("text/x-edit") || dragging;
-                    if (id) void update({ id: id as Id<"editVideos">, status: col.value });
+                    const id = e.dataTransfer.getData("text/x-review") || dragging;
+                    if (id) void update({ id: id as Id<"reviews">, status: col.value });
                     setDragging(null);
                     setOver(null);
                   }}
                   className={`flex w-[300px] shrink-0 snap-start flex-col rounded-2xl p-3 transition-colors md:w-auto ${
-                    isOver ? "bg-(--kb-drop) ring-2 ring-[#2358d8]/40" : posted ? "bg-(--kb-posted-bg) ring-1 ring-(--kb-posted-ring)" : "bg-(--c-b-efefed)"
+                    isOver ? "bg-(--kb-drop) ring-2 ring-[#2358d8]/40" : done ? "bg-(--kb-done-bg) ring-1 ring-(--kb-done-ring)" : "bg-(--c-b-efefed)"
                   }`}
                 >
                   <header className="flex h-8 items-center gap-2 px-1">
-                    <span className="h-2 w-2 rounded-full" style={{ background: col.dot }} />
-                    <h2 className={`m-0 text-[13.5px] font-semibold ${posted ? "text-(--kb-posted-text)" : "text-(--c-t-1b1b1b)"}`}>{col.label}</h2>
+                    {/* The glyph is what names the column; the color only repeats it */}
+                    <span className="text-[13px] leading-none" style={{ color: col.hex }} title={`${col.label} (${col.colorName})`} aria-hidden="true">
+                      {col.glyph}
+                    </span>
+                    <h2 className={`m-0 text-[13.5px] font-semibold ${done ? "text-(--kb-done-text)" : "text-(--c-t-1b1b1b)"}`}>{col.label}</h2>
                     <span className="text-[12.5px] tabular-nums text-(--c-t-9a9a9a)">{list.length}</span>
                   </header>
                   <div className="mt-1 flex min-h-[72px] flex-col gap-2">
-                    {list.map((v) => (
+                    {list.map((r) => (
                       <Card
-                        key={v.id}
-                        v={v}
-                        dragging={dragging === v.id}
-                        onOpen={() => openVideo(v.id)}
+                        key={r._id}
+                        r={r}
+                        dragging={dragging === r._id}
+                        onOpen={() => openReview(r._id)}
                         onDragStart={(e) => {
-                          e.dataTransfer.setData("text/x-edit", v.id);
+                          e.dataTransfer.setData("text/x-review", r._id);
                           e.dataTransfer.effectAllowed = "move";
-                          setDragging(v.id);
+                          setDragging(r._id);
                         }}
                         onDragEnd={() => {
                           setDragging(null);
@@ -154,7 +190,7 @@ export function EditFeed() {
                     ))}
                     {!list.length && (
                       <div className="flex h-[72px] items-center justify-center rounded-xl border border-dashed border-(--c-l-dcdcdc) px-4 text-center text-[12.5px] text-(--c-t-9a9a9a)">
-                        {dragging ? "Drop here" : col.value === "editing" ? "New cuts from agents land here" : "Nothing here"}
+                        {dragging ? "Drop here" : col.value === "inReview" ? "New rounds land here" : "Nothing here"}
                       </div>
                     )}
                   </div>
@@ -165,24 +201,25 @@ export function EditFeed() {
         </div>
       )}
 
-      {open && <VideoDetail id={open} onClose={() => openVideo(null)} />}
+      {open && <ReviewDetail id={open} onClose={() => openReview(null)} />}
     </div>
   );
 }
 
 function Card({
-  v,
+  r,
   dragging,
   onOpen,
   onDragStart,
   onDragEnd,
 }: {
-  v: Row;
+  r: ReviewRow;
   dragging: boolean;
   onOpen: () => void;
   onDragStart: (e: React.DragEvent) => void;
   onDragEnd: () => void;
 }) {
+  const where = [r.clubName, r.projectTitle].filter(Boolean).join(" · ");
   return (
     <button
       type="button"
@@ -194,43 +231,76 @@ function Card({
         dragging ? "opacity-40" : ""
       }`}
     >
-      <div className="relative h-[104px] w-[59px] shrink-0 overflow-hidden rounded-lg bg-[#111]">
-        {v.videoUrl && <video src={`${v.videoUrl}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />}
-        <span className="absolute left-1 top-1 rounded bg-black/65 px-1 text-[10.5px] font-semibold leading-[16px] text-white">v{v.version}</span>
+      <div className="relative h-[72px] w-[96px] shrink-0 overflow-hidden rounded-lg bg-(--c-b-ececea)">
+        {r.thumbUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={r.thumbUrl} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <span className="flex h-full w-full items-center justify-center text-[11px] text-(--c-t-9a9a9a)">No sheet</span>
+        )}
+        <span className="absolute left-1 top-1 rounded bg-black/65 px-1 text-[10.5px] font-semibold leading-[16px] text-white">v{r.roundCount}</span>
+        {r.fileCount > 1 && (
+          <span className="absolute bottom-1 right-1 rounded bg-black/65 px-1 text-[10.5px] font-semibold leading-[16px] text-white">{r.fileCount} sheets</span>
+        )}
       </div>
       <div className="flex min-w-0 flex-1 flex-col py-0.5">
-        <div className="line-clamp-2 text-[13.5px] font-medium leading-[1.35] text-(--c-t-1b1b1b)">{v.title}</div>
+        <div className="line-clamp-2 text-[13.5px] font-medium leading-[1.35] text-(--c-t-1b1b1b)">{r.title}</div>
+        {where && <div className="mt-0.5 truncate text-[12px] text-(--c-t-8a8a8a)">{where}</div>}
         <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-(--c-t-8a8a8a)">
-          {v.editsRequestedAt ? (
-            <span className="rounded-full bg-(--c-b-fdf3cf) px-1.5 py-px text-[11px] font-medium text-(--c-t-7a5b00)">Edits requested</span>
+          {r.changesRequestedAt ? (
+            <span className="rounded-full bg-(--c-b-fdf3cf) px-1.5 py-px text-[11px] font-medium text-(--c-t-7a5b00)">Changes requested</span>
           ) : null}
-          {v.openComments > 0 && <span>{v.openComments} open comment{v.openComments === 1 ? "" : "s"}</span>}
-          <span>{ago(v.updatedAt)}</span>
+          {r.openMarks > 0 && (
+            <span>
+              {r.openMarks} open mark{r.openMarks === 1 ? "" : "s"}
+            </span>
+          )}
+          <span>{ago(r.updatedAt)}</span>
         </div>
       </div>
     </button>
   );
 }
 
-/** Upload a video file: a new video (v1), or the next version of one */
-function UploadButton({ label, editId, onDone, small }: { label: string; editId?: Id<"editVideos">; onDone?: (id: string | null) => void; small?: boolean }) {
+/**
+ * Put sheets up: a new review (v1), or the next round of one. A round holds several sheets, so this
+ * takes a whole plan set at once and keeps them in the order they were picked.
+ */
+function SheetUpload({
+  label,
+  reviewId,
+  projectId,
+  onDone,
+  small,
+}: {
+  label: string;
+  reviewId?: Id<"reviews">;
+  /** Set when the upload came from a project's Visuals tab, so the new review lands on that project */
+  projectId?: Id<"projects">;
+  onDone?: (id: string | null) => void;
+  small?: boolean;
+}) {
   const uploadUrl = useMutation(api.docs.generateUploadUrl);
-  const create = useMutation(api.editFeed.create);
-  const addVersion = useMutation(api.editFeed.addVersion);
+  const create = useMutation(api.reviews.create);
+  const addRound = useMutation(api.reviews.addRound);
   const input = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<number | null>(null);
-  const pick = async (file: File | undefined) => {
-    if (!file) return;
-    if (!file.type.startsWith("video/")) return alert("Pick a video file");
+  const pick = async (picked: File[]) => {
+    const files = picked.filter((f) => isReviewSheet(f.type));
+    if (!files.length) return alert("A sheet has to be an image or a PDF — something you can mark up.");
     setProgress(0);
     try {
-      const storageId = (await uploadToUrl(await uploadUrl(), file, setProgress)) as Id<"_storage">;
-      if (editId) {
-        await addVersion({ id: editId, storageId, mime: file.type });
-        onDone?.(editId);
+      const out: SheetArg[] = [];
+      for (const [i, f] of files.entries()) {
+        const storageId = (await uploadToUrl(await uploadUrl(), f, (p) => setProgress((i + p) / files.length))) as Id<"_storage">;
+        out.push({ storageId, mime: f.type, name: f.name });
+      }
+      if (reviewId) {
+        await addRound({ id: reviewId, files: out });
+        onDone?.(reviewId);
       } else {
-        const title = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
-        onDone?.(await create({ title, storageId, mime: file.type }));
+        const title = files[0].name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+        onDone?.(await create({ title, files: out, projectId }));
       }
     } catch (e) {
       alert(e instanceof Error ? e.message : "Upload failed");
@@ -240,7 +310,14 @@ function UploadButton({ label, editId, onDone, small }: { label: string; editId?
   };
   return (
     <>
-      <input ref={input} type="file" accept="video/*" hidden onChange={(e) => void pick(e.target.files?.[0]).finally(() => (e.target.value = ""))} />
+      <input
+        ref={input}
+        type="file"
+        accept={REVIEW_FILE_ACCEPT}
+        multiple
+        hidden
+        onChange={(e) => void pick(Array.from(e.target.files ?? [])).finally(() => (e.target.value = ""))}
+      />
       <button
         type="button"
         disabled={progress !== null}
@@ -258,22 +335,30 @@ function UploadButton({ label, editId, onDone, small }: { label: string; editId?
   );
 }
 
-/** One video: the player with its versions, and the comments for the version you're watching */
-function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
-  const data = useQuery(api.editFeed.get, { id });
-  const update = useMutation(api.editFeed.update);
-  const requestEdits = useMutation(api.editFeed.requestEdits);
-  const cancelEdits = useMutation(api.editFeed.cancelEdits);
-  const remove = useMutation(api.editFeed.remove);
-  const [version, setVersion] = useState<number | null>(null);
-  const player = useRef<HTMLVideoElement>(null);
+/** One review: the round's sheets on the left, the marks on them down the right. */
+function ReviewDetail({ id, onClose }: { id: string; onClose: () => void }) {
+  const data = useQuery(api.reviews.get, { id });
+  const update = useMutation(api.reviews.update);
+  const requestChanges = useMutation(api.reviews.requestChanges);
+  const cancelChanges = useMutation(api.reviews.cancelChanges);
+  const approve = useMutation(api.reviews.approve);
+  const remove = useMutation(api.reviews.remove);
+  const [round, setRound] = useState<number | null>(null);
   const [title, setTitle] = useState<string | null>(null);
-  /** The right side shows the transcript (follows the video) or the comments */
-  const [tab, setTab] = useState<"transcript" | "comments">("transcript");
+  const [fileIndex, setFileIndex] = useState(0);
+  const [pinning, setPinning] = useState(false);
+  const [pending, setPending] = useState<PinPoint | null>(null);
+  const [jump, setJump] = useState<{ id: string; nonce: number } | null>(null);
+  const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
+  const nonce = useRef(0);
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !(e.target as HTMLElement).closest("textarea,input")) onClose();
+      if (e.key !== "Escape") return;
+      if ((e.target as HTMLElement).closest("textarea,input")) return;
+      // The sheet gets Escape first while a mark is being placed
+      if (pinning || pending) return;
+      onClose();
     };
     window.addEventListener("keydown", esc);
     const prev = document.body.style.overflow;
@@ -282,15 +367,16 @@ function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
       window.removeEventListener("keydown", esc);
       document.body.style.overflow = prev;
     };
-  }, [onClose]);
+  }, [onClose, pinning, pending]);
 
-  // Show the newest version, and jump to it when a new one arrives
-  const latest = data?.version ?? 0;
+  // Show the newest round, and jump to it when one lands
+  const latest: number = data?.review?.roundCount ?? 0;
   const lastSeen = useRef(0);
   useEffect(() => {
     if (latest && latest !== lastSeen.current) {
       lastSeen.current = latest;
-      setVersion(latest);
+      setRound(latest);
+      setFileIndex(0);
     }
   }, [latest]);
 
@@ -299,11 +385,11 @@ function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Video"
+        aria-label="Review"
         className="fixed inset-0 z-[90] flex items-stretch justify-center bg-black/40 p-0 backdrop-blur-[2px] sm:p-6"
         onMouseDown={(e) => e.target === e.currentTarget && onClose()}
       >
-        <div className="flex w-full max-w-[1080px] flex-col overflow-hidden bg-(--c-b-ffffff) shadow-[0_24px_80px_rgba(0,0,0,0.3)] sm:rounded-2xl">{children}</div>
+        <div className="flex w-full max-w-[1240px] flex-col overflow-hidden bg-(--c-b-ffffff) shadow-[0_24px_80px_rgba(0,0,0,0.3)] sm:rounded-2xl">{children}</div>
       </div>,
       document.body,
     );
@@ -312,52 +398,76 @@ function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
   if (data === null)
     return shell(
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-[14px] text-(--c-t-737373)">
-        This video was deleted.
+        This review was deleted.
         <button type="button" onClick={onClose} className="font-medium text-(--c-t-2358d8)">
           Close
         </button>
       </div>,
     );
 
-  const shown = data.versions.find((x) => x.number === version) ?? data.versions[data.versions.length - 1];
-  const comments = data.comments.filter((c) => c.versionNumber === shown?.number).sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity) || a.createdAt - b.createdAt);
-  const editId = data.id as Id<"editVideos">;
+  const review: Doc<"reviews"> = data.review;
+  const rounds: Round[] = data.rounds;
+  const allMarks: Mark[] = data.marks;
+  const reviewId = review._id;
+  const shown = rounds.find((x) => x.number === round) ?? rounds[rounds.length - 1];
+  const marks = allMarks.filter((m) => m.roundNumber === shown?.number);
+  const sheetMarks: SheetMark[] = marks.map((m) => ({
+    id: m._id,
+    fileIndex: m.fileIndex,
+    page: m.page ?? 1,
+    x: m.x ?? null,
+    y: m.y ?? null,
+    rects: m.rects ?? [],
+    markKind: m.markKind ?? null,
+    text: m.text,
+    resolved: !!m.resolved,
+  }));
+  const where = [data.club?.name, data.project?.title].filter(Boolean).join(" · ");
+  // The two panes point at each other: a row scrolls the sheet to its pin, a pin scrolls the
+  // panel to its row. Either way you end up looking at the same mark twice.
+  const jumpTo = (markId: string) => setJump({ id: markId, nonce: ++nonce.current });
+  const focusOn = (markId: string) => setFocus({ id: markId, nonce: ++nonce.current });
 
   return shell(
     <>
-      <div className="flex h-14 shrink-0 items-center gap-3 border-b border-(--c-l-ebebeb) px-4">
-        <input
-          value={title ?? data.title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={() => {
-            if (title !== null && title !== data.title) void update({ id: editId, title });
-            setTitle(null);
-          }}
-          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-          aria-label="Title"
-          className="h-9 min-w-0 flex-1 rounded-md bg-transparent px-2 text-[16px] font-semibold text-(--c-t-1b1b1b) outline-none hover:bg-(--c-b-f4f4f4) focus:bg-(--c-b-f4f4f4)"
-        />
-        <div className="hidden items-center rounded-lg bg-(--c-b-f4f4f2) p-0.5 sm:flex" role="radiogroup" aria-label="Status">
-          {data.status === "archived" && <span className="px-2.5 text-[13px] font-medium text-(--c-t-737373)">Archived</span>}
-          {data.status !== "archived" && COLUMNS.map((c) => (
-            <button
-              key={c.value}
-              type="button"
-              role="radio"
-              aria-checked={data.status === c.value}
-              onClick={() => void update({ id: editId, status: c.value })}
-              className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] ${data.status === c.value ? "bg-(--c-b-ffffff) font-medium text-(--c-t-1b1b1b) shadow-sm" : "text-(--c-t-737373) hover:text-(--c-t-1b1b1b)"}`}
-            >
-              <span className="h-1.5 w-1.5 rounded-full" style={{ background: c.dot }} />
-              {c.label}
-            </button>
-          ))}
+      <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-3 border-b border-(--c-l-ebebeb) px-4 py-2">
+        <div className="flex min-w-[200px] flex-1 flex-col">
+          <input
+            value={title ?? review.title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={() => {
+              if (title !== null && title !== review.title) void update({ id: reviewId, title });
+              setTitle(null);
+            }}
+            onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+            aria-label="Title"
+            className="h-9 min-w-0 rounded-md bg-transparent px-2 text-[16px] font-semibold text-(--c-t-1b1b1b) outline-none hover:bg-(--c-b-f4f4f4) focus:bg-(--c-b-f4f4f4)"
+          />
+          {where && <span className="truncate px-2 text-[12px] text-(--c-t-8a8a8a)">{where}</span>}
         </div>
-        {data.status === "archived" ? (
+        <div className="hidden items-center rounded-lg bg-(--c-b-f4f4f2) p-0.5 sm:flex" role="radiogroup" aria-label="Status">
+          {review.status === "archived" && <span className="px-2.5 text-[13px] font-medium text-(--c-t-737373)">Dropped</span>}
+          {review.status !== "archived" &&
+            COLUMNS.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                role="radio"
+                aria-checked={review.status === c.value}
+                onClick={() => void update({ id: reviewId, status: c.value })}
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] ${
+                  review.status === c.value ? "bg-(--c-b-ffffff) font-medium text-(--c-t-1b1b1b) shadow-sm" : "text-(--c-t-737373) hover:text-(--c-t-1b1b1b)"
+                }`}
+              >
+                <StatusMark status={c.value} size={12} />
+              </button>
+            ))}
+        </div>
+        {review.status === "archived" ? (
           <button
             type="button"
-            onClick={() => void update({ id: editId, status: "editing" })}
-            title="Bring it back to Editing"
+            onClick={() => void update({ id: reviewId, status: "inReview" })}
+            title="Put it back in review"
             className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium text-(--c-t-6b6b6b) ring-1 ring-(--c-l-e3e3e0) hover:text-(--c-t-1b1b1b)"
           >
             <ArchiveIcon />
@@ -366,12 +476,9 @@ function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
         ) : (
           <button
             type="button"
-            onClick={() => {
-              void update({ id: editId, status: "archived" });
-              setTab("comments");
-            }}
-            aria-label="Archive"
-            title="Archive: drop this video. Say why in a comment so agents can learn from it."
+            onClick={() => void update({ id: reviewId, status: "archived" })}
+            aria-label="Drop this review"
+            title="Drop this review. Say why in a mark, so the reasoning survives."
             className="flex h-9 w-9 items-center justify-center rounded-lg text-(--c-t-8a8a8a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)"
           >
             <ArchiveIcon />
@@ -380,13 +487,13 @@ function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
         <button
           type="button"
           onClick={() => {
-            if (confirm(`Delete "${data.title}" and all its versions? This can't be undone.`)) {
-              void remove({ id: editId });
+            if (confirm(`Delete "${review.title}" and all its rounds? This can't be undone.`)) {
+              void remove({ id: reviewId });
               onClose();
             }
           }}
-          aria-label="Delete video"
-          title="Delete video"
+          aria-label="Delete review"
+          title="Delete review"
           className="flex h-9 w-9 items-center justify-center rounded-lg text-(--c-t-9a9a9a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-b42318)"
         >
           <IconTrash size={16} />
@@ -397,23 +504,11 @@ function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
-        {/* Player and versions */}
-        <div className="flex shrink-0 flex-col items-center gap-3 bg-(--c-b-f7f7f5) p-4 md:w-[440px] md:overflow-y-auto">
-          {shown?.url ? (
-            <video
-              key={shown.number}
-              ref={player}
-              src={shown.url}
-              controls
-              playsInline
-              className="aspect-[9/16] max-h-[min(70vh,640px)] w-auto max-w-full rounded-xl bg-black shadow-[0_8px_30px_rgba(0,0,0,0.18)]"
-            />
-          ) : (
-            <div className="flex aspect-[9/16] h-[420px] items-center justify-center rounded-xl bg-(--c-b-ececea) text-[13px] text-(--c-t-9a9a9a)">No video file</div>
-          )}
-          <div className="flex w-full flex-wrap items-center justify-center gap-1.5" role="tablist" aria-label="Versions">
-            {data.versions.map((x) => {
-              const n = data.comments.filter((c) => c.versionNumber === x.number).length;
+        {/* The round's sheets */}
+        <div className="flex min-h-[380px] shrink-0 flex-col md:min-h-0 md:w-[58%] md:border-r md:border-(--c-l-ebebeb)">
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5 px-3 pt-3" role="tablist" aria-label="Rounds">
+            {rounds.map((x) => {
+              const n = allMarks.filter((m) => m.roundNumber === x.number).length;
               const on = x.number === shown?.number;
               return (
                 <button
@@ -421,108 +516,108 @@ function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   type="button"
                   role="tab"
                   aria-selected={on}
-                  onClick={() => setVersion(x.number)}
+                  onClick={() => {
+                    setRound(x.number);
+                    setFileIndex(0);
+                    setPending(null);
+                  }}
                   className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium ring-1 ${
                     on ? "bg-(--c-b-1b1b1b) text-(--c-on-ink) ring-transparent" : "bg-(--c-b-ffffff) text-(--c-t-4a4a4a) ring-(--c-l-e3e3e0) hover:ring-(--c-l-c9c9c9)"
                   }`}
                 >
                   v{x.number}
-                  {x.number === data.version && <span className={`text-[11px] font-normal ${on ? "opacity-70" : "text-(--c-t-9a9a9a)"}`}>latest</span>}
+                  {x.number === review.roundCount && <span className={`text-[11px] font-normal ${on ? "opacity-70" : "text-(--c-t-9a9a9a)"}`}>latest</span>}
                   {n > 0 && <span className={`text-[11px] font-normal ${on ? "opacity-70" : "text-(--c-t-9a9a9a)"}`}>· {n}</span>}
                 </button>
               );
             })}
+            <span className="flex-1" />
+            <SheetUpload label="Post the next round" reviewId={reviewId} small />
           </div>
           {shown && (
-            <div className="w-full rounded-xl bg-(--c-b-ffffff) px-3.5 py-2.5 text-[13px] ring-1 ring-(--c-l-ebebeb)">
-              <div className="text-[12px] text-(--c-t-9a9a9a)">
-                v{shown.number} · {shown.by ?? "Someone"}
-                {shown.agent && shown.by !== "Agent" ? " (agent)" : ""} · {ago(shown.createdAt)}
-              </div>
-              <div className={`mt-0.5 whitespace-pre-wrap ${shown.note ? "text-(--c-t-2e2e2e)" : "text-(--c-t-9a9a9a)"}`}>{shown.note || "No notes on this version."}</div>
+            <div className="shrink-0 px-3 pt-2 text-[12px] text-(--c-t-9a9a9a)">
+              v{shown.number} · {shown.by ?? "Someone"}
+              {shown.agent && shown.by !== "Agent" ? " (agent)" : ""} · {ago(shown.createdAt)}
+              {shown.note && <span className="ml-1.5 whitespace-pre-wrap text-(--c-t-2e2e2e)">{shown.note}</span>}
             </div>
           )}
-          <UploadButton label="Upload a new version" editId={editId} small />
+          <div className="mt-2 flex min-h-0 flex-1 flex-col overflow-hidden border-t border-(--c-l-ebebeb)">
+            <SheetView
+              key={shown?.number}
+              sheets={shown?.files ?? []}
+              index={fileIndex}
+              onIndex={(i) => {
+                setFileIndex(i);
+                setPending(null);
+              }}
+              marks={sheetMarks}
+              pinning={pinning}
+              onPinning={setPinning}
+              pending={pending}
+              onPin={setPending}
+              onPinCancel={() => setPending(null)}
+              onOpenMark={focusOn}
+              jump={jump}
+            />
+          </div>
         </div>
 
-        {/* Comments */}
+        {/* The marks on it */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-(--c-l-ebebeb) px-5 py-3">
-            <div className="flex min-w-0 flex-1 items-center gap-1" role="tablist" aria-label="Transcript or comments">
-              {(["transcript", "comments"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  role="tab"
-                  aria-selected={tab === t}
-                  onClick={() => setTab(t)}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13.5px] font-medium ${tab === t ? "bg-(--c-b-f1f1ef) text-(--c-t-1b1b1b)" : "text-(--c-t-737373) hover:text-(--c-t-1b1b1b)"}`}
-                >
-                  {t === "transcript" ? "Transcript" : "Comments"}
-                  {t === "comments" && comments.length > 0 && <span className="text-[12px] font-normal text-(--c-t-9a9a9a)">{comments.length}</span>}
-                </button>
-              ))}
-              <span className="ml-1 text-[12.5px] text-(--c-t-9a9a9a)">v{shown?.number}{shown?.number === data.version ? "" : " (earlier)"}</span>
+            <div className="min-w-0 flex-1">
+              <h2 className="m-0 text-[14px] font-semibold text-(--c-t-1b1b1b)">
+                Marks <span className="font-normal text-(--c-t-9a9a9a)">v{shown?.number}{shown?.number === review.roundCount ? "" : " (earlier)"}</span>
+              </h2>
             </div>
-            {data.status === "archived" ? (
-              <span className="rounded-full bg-(--c-b-f1f1ef) px-2.5 py-1 text-[12.5px] text-(--c-t-6b6b6b)">Archived: say why in a comment so agents learn</span>
-            ) : data.editsRequestedAt ? (
+            {review.status === "archived" ? (
+              <span className="rounded-full bg-(--c-b-f1f1ef) px-2.5 py-1 text-[12.5px] text-(--c-t-6b6b6b)">Dropped: say why in a mark</span>
+            ) : review.changesRequestedAt ? (
               <div className="flex items-center gap-2">
-                <span className="rounded-full bg-(--c-b-fdf3cf) px-2.5 py-1 text-[12.5px] font-medium text-(--c-t-7a5b00)">Edits requested · {ago(data.editsRequestedAt)}</span>
-                <button type="button" onClick={() => void cancelEdits({ id: editId })} className="text-[12.5px] text-(--c-t-737373) hover:text-(--c-t-1b1b1b)">
+                <span className="rounded-full bg-(--c-b-fdf3cf) px-2.5 py-1 text-[12.5px] font-medium text-(--c-t-7a5b00)">Changes requested · {ago(review.changesRequestedAt)}</span>
+                <button type="button" onClick={() => void cancelChanges({ id: reviewId })} className="text-[12.5px] text-(--c-t-737373) hover:text-(--c-t-1b1b1b)">
                   Undo
                 </button>
               </div>
+            ) : review.status === "approved" ? (
+              <span className="rounded-full bg-(--c-b-e6f4ea) px-2.5 py-1 text-[12.5px] font-medium text-(--c-t-15803d)">
+                <StatusMark status="approved" size={12} />
+                {review.approvedBy ? ` by ${review.approvedBy}` : ""}
+              </span>
             ) : (
-              <button
-                type="button"
-                onClick={() => void requestEdits({ id: editId })}
-                title="Tell the editor (an agent) to make the changes in these comments and upload the next version"
-                className="inline-flex h-9 items-center rounded-lg bg-(--c-b-1b1b1b) px-3.5 text-[13.5px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333)"
-              >
-                Request edits
-              </button>
-            )}
-          </div>
-          {tab === "transcript" && shown ? (
-            <Transcript
-              key={shown.number}
-              editId={editId}
-              version={shown.number}
-              versionId={shown.id}
-              transcript={shown.transcript}
-              comments={comments}
-              seek={(t) => {
-                const p = player.current;
-                if (!p) return;
-                p.currentTime = t;
-                void p.play().catch(() => {});
-              }}
-            />
-          ) : (
-          <>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            {comments.length === 0 ? (
-              <div className="py-8 text-center text-[13.5px] text-(--c-t-9a9a9a)">No comments on this version yet.</div>
-            ) : (
-              <div className="flex flex-col gap-2.5">
-                {comments.map((c) => (
-                  <CommentRow
-                    key={c.id}
-                    c={c}
-                    onSeek={(t) => {
-                      const p = player.current;
-                      if (!p) return;
-                      p.currentTime = t;
-                      void p.play().catch(() => {});
-                    }}
-                  />
-                ))}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void requestChanges({ id: reviewId })}
+                  title="Hand the marks on this round back to the designer; the next round answers them"
+                  className="inline-flex h-9 items-center rounded-lg bg-(--c-b-1b1b1b) px-3.5 text-[13.5px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333)"
+                >
+                  Request changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void approve({ id: reviewId })}
+                  title="Sign this round off"
+                  className="inline-flex h-9 items-center rounded-lg px-3 text-[13.5px] font-medium text-(--c-t-6b6b6b) ring-1 ring-(--c-l-e3e3e0) hover:text-(--c-t-1b1b1b)"
+                >
+                  Approve
+                </button>
               </div>
             )}
           </div>
-          {shown && <Composer editId={editId} version={shown.number} player={player} />}
-          </>
+
+          <MarksPanel marks={marks} sheets={shown?.files ?? []} onJump={jumpTo} focus={focus} />
+          {shown && (
+            <Composer
+              key={shown.number}
+              reviewId={reviewId}
+              round={shown.number}
+              fileIndex={fileIndex}
+              sheetName={shown.files[fileIndex]?.name ?? null}
+              pending={pending}
+              onClearPin={() => setPending(null)}
+              onStartPin={() => setPinning(true)}
+            />
           )}
         </div>
       </div>
@@ -530,22 +625,135 @@ function VideoDetail({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
-type Attachment = { url: string | null; mime: string | null; name: string | null };
-type CommentData = {
-  id: string;
-  text: string;
-  at: number | null;
-  end: number | null;
-  quote: string | null;
-  attachments: Attachment[];
-  authorName: string | null;
-  agent: boolean;
-  resolved: boolean;
-  createdAt: number;
-};
+/**
+ * The marks on the round being shown, grouped by sheet. The server orders them the way an eye
+ * crosses a drawing — sheet, page, down, across — so this keeps the order it is given.
+ */
+function MarksPanel({
+  marks,
+  sheets,
+  onJump,
+  focus,
+}: {
+  marks: Mark[];
+  sheets: SheetFile[];
+  onJump: (id: string) => void;
+  /** A pin was clicked on the sheet; bring its row up and ring it. */
+  focus: { id: string; nonce: number } | null;
+}) {
+  if (!marks.length)
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <p className="m-0 py-8 text-center text-[13.5px] text-(--c-t-9a9a9a)">
+          Nothing marked on this round yet. Press <b className="font-medium text-(--c-t-4a4a4a)">Pin a mark</b> (or N), then click the sheet.
+        </p>
+      </div>
+    );
+  const order = [...new Set(marks.map((m) => m.fileIndex))];
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      <div className="flex flex-col gap-4">
+        {order.map((fi) => (
+          <div key={fi}>
+            {sheets.length > 1 && (
+              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.05em] text-(--c-t-9a9a9a)">
+                {sheets[fi]?.name?.replace(/\.[^.]+$/, "") || `Sheet ${fi + 1}`}
+              </div>
+            )}
+            <div className="flex flex-col gap-2.5">
+              {marks.filter((m) => m.fileIndex === fi).map((m) => (
+                <MarkCard key={m._id} m={m} multiPage={isPdfSheet(sheets[fi]?.mime)} onJump={onJump} focus={focus} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-/** Images and videos on a comment, shown like in script comments: pictures as thumbnails, videos playable */
-function AttachmentGrid({ items }: { items: Attachment[] }) {
+function MarkCard({
+  m,
+  multiPage,
+  onJump,
+  focus,
+}: {
+  m: Mark;
+  multiPage: boolean;
+  onJump: (id: string) => void;
+  focus: { id: string; nonce: number } | null;
+}) {
+  const updateMark = useMutation(api.reviews.updateMark);
+  const removeMark = useMutation(api.reviews.removeMark);
+  const box = useRef<HTMLDivElement>(null);
+  const [lit, setLit] = useState(false);
+  const k = markKindOf(m.markKind);
+  const pinned = (m.x !== null && m.x !== undefined) || !!m.rects?.length;
+  const mine = focus?.id === m._id;
+  const nonce = mine ? focus.nonce : 0;
+  useEffect(() => {
+    if (!nonce) return;
+    box.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    setLit(true);
+    const t = setTimeout(() => setLit(false), 1600);
+    return () => clearTimeout(t);
+  }, [nonce]);
+  return (
+    <div
+      ref={box}
+      className={`group rounded-xl px-3.5 py-2.5 ring-1 ${lit ? "ring-2 ring-(--c-l-2358d8)" : "ring-(--c-l-ebebeb)"} ${m.resolved ? "bg-(--c-b-fafaf9)" : "bg-(--c-b-ffffff)"}`}
+    >
+      <div className="flex flex-wrap items-center gap-2 text-[12px] text-(--c-t-9a9a9a)">
+        {/* The glyph and the word both; the color is the third telling, not the only one */}
+        <button
+          type="button"
+          onClick={() => pinned && onJump(m._id)}
+          disabled={!pinned}
+          title={pinned ? `Show it on the sheet — ${k.label} (${k.colorName})` : `${k.label} (${k.colorName}), not pinned to a spot`}
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-px text-[11.5px] font-medium ring-1 ring-(--c-l-ebebeb) enabled:hover:bg-(--c-b-f4f4f4) disabled:opacity-80"
+          style={{ color: k.hex }}
+        >
+          <span aria-hidden="true">{k.glyph}</span>
+          {k.label}
+          {multiPage && m.page ? <span className="text-(--c-t-9a9a9a)">p{m.page}</span> : null}
+        </button>
+        <span className="font-medium text-(--c-t-4a4a4a)">{m.authorName ?? "Someone"}</span>
+        {m.agent && <span className="rounded bg-(--c-b-efe9fb) px-1 text-[11px] font-medium text-(--c-t-5b3fb0)">Agent</span>}
+        <span>{ago(m.createdAt)}</span>
+        <span className="flex-1" />
+        <label className="flex cursor-pointer items-center gap-1.5 text-[12px]">
+          <input
+            type="checkbox"
+            checked={!!m.resolved}
+            onChange={() => void updateMark({ markId: m._id, resolved: !m.resolved })}
+            className="nn-check h-[14px] w-[14px]"
+          />
+          {m.resolved ? (m.resolvedByRound ? `Done in v${m.resolvedByRound}` : "Done") : "Mark done"}
+        </label>
+        <button
+          type="button"
+          onClick={() => confirm("Delete this mark?") && void removeMark({ markId: m._id })}
+          aria-label="Delete mark"
+          className="flex h-6 w-6 items-center justify-center rounded text-(--c-t-9a9a9a) opacity-0 hover:text-(--c-t-b42318) group-hover:opacity-100 pointer-coarse:opacity-100"
+        >
+          <IconTrash size={13} />
+        </button>
+      </div>
+      {m.quote && (
+        <div className="mt-1.5 border-l-2 border-(--comment-underline) pl-2.5 text-[13px] italic leading-[1.5] text-(--c-t-737373)">&ldquo;{m.quote}&rdquo;</div>
+      )}
+      {m.text && (
+        <div className={`mt-1 whitespace-pre-wrap break-words text-[14px] leading-[1.55] ${m.resolved ? "text-(--c-t-9a9a9a) line-through decoration-(--c-t-c4c4c4)" : "text-(--c-t-262626)"}`}>
+          {m.text}
+        </div>
+      )}
+      <AttachmentGrid items={m.attachments ?? []} />
+    </div>
+  );
+}
+
+/** Pictures and files on a mark: a site photo, a cutsheet, a link to a vendor page. */
+function AttachmentGrid({ items }: { items: { url?: string; mime?: string; name?: string }[] }) {
   if (!items.length) return null;
   return (
     <div className="mt-2 flex flex-wrap gap-2">
@@ -563,48 +771,6 @@ function AttachmentGrid({ items }: { items: Attachment[] }) {
           </a>
         ),
       )}
-    </div>
-  );
-}
-
-function CommentRow({ c, onSeek }: { c: CommentData; onSeek: (t: number) => void }) {
-  const updateComment = useMutation(api.editFeed.updateComment);
-  const removeComment = useMutation(api.editFeed.removeComment);
-  return (
-    <div className={`group rounded-xl px-3.5 py-2.5 ring-1 ring-(--c-l-ebebeb) ${c.resolved ? "bg-(--c-b-fafaf9)" : "bg-(--c-b-ffffff)"}`}>
-      <div className="flex items-center gap-2 text-[12px] text-(--c-t-9a9a9a)">
-        {c.at !== null && (
-          <button type="button" onClick={() => onSeek(c.at!)} title="Play from here" className="rounded-md bg-(--c-b-e7eefb) px-1.5 py-px font-medium tabular-nums text-(--c-t-2358d8) hover:bg-(--c-b-dbe6fb)">
-            {clock(c.at)}
-            {c.end !== null && c.end > c.at + 0.5 ? `–${clock(c.end)}` : ""}
-          </button>
-        )}
-        <span className="font-medium text-(--c-t-4a4a4a)">{c.authorName ?? "Someone"}</span>
-        {c.agent && <span className="rounded bg-(--c-b-efe9fb) px-1 text-[11px] font-medium text-(--c-t-5b3fb0)">Agent</span>}
-        <span>{ago(c.createdAt)}</span>
-        <span className="flex-1" />
-        <label className="flex cursor-pointer items-center gap-1.5 text-[12px]">
-          <input type="checkbox" checked={c.resolved} onChange={() => void updateComment({ id: c.id as Id<"editComments">, resolved: !c.resolved })} className="nn-check h-[14px] w-[14px]" />
-          {c.resolved ? "Done" : "Mark done"}
-        </label>
-        <button
-          type="button"
-          onClick={() => confirm("Delete this comment?") && void removeComment({ id: c.id as Id<"editComments"> })}
-          aria-label="Delete comment"
-          className="flex h-6 w-6 items-center justify-center rounded text-(--c-t-9a9a9a) opacity-0 hover:text-(--c-t-b42318) group-hover:opacity-100 pointer-coarse:opacity-100"
-        >
-          <IconTrash size={13} />
-        </button>
-      </div>
-      {c.quote && (
-        <button type="button" onClick={() => c.at !== null && onSeek(c.at)} className="mt-1.5 block w-full border-l-2 border-(--comment-underline) pl-2.5 text-left text-[13px] italic leading-[1.5] text-(--c-t-737373)">
-          “{c.quote}”
-        </button>
-      )}
-      {c.text && (
-        <div className={`mt-1 whitespace-pre-wrap break-words text-[14px] leading-[1.55] ${c.resolved ? "text-(--c-t-9a9a9a) line-through decoration-(--c-t-c4c4c4)" : "text-(--c-t-262626)"}`}>{c.text}</div>
-      )}
-      <AttachmentGrid items={c.attachments} />
     </div>
   );
 }
@@ -670,35 +836,52 @@ function AttachButton({ up }: { up: ReturnType<typeof useUploads> }) {
   );
 }
 
-/** Write a comment; it's pinned to where the video is when you start typing (switch that off for a general note) */
-function Composer({ editId, version, player }: { editId: Id<"editVideos">; version: number; player: React.RefObject<HTMLVideoElement | null> }) {
-  const add = useMutation(api.editFeed.addComment);
+/**
+ * Write a mark. It lands on the point you pinned, or — with nothing pinned — on the sheet as a
+ * whole. The kind is picked by name and glyph, so the four kinds never rely on their colors.
+ */
+function Composer({
+  reviewId,
+  round,
+  fileIndex,
+  sheetName,
+  pending,
+  onClearPin,
+  onStartPin,
+}: {
+  reviewId: Id<"reviews">;
+  round: number;
+  fileIndex: number;
+  sheetName: string | null;
+  pending: PinPoint | null;
+  onClearPin: () => void;
+  onStartPin: () => void;
+}) {
+  const add = useMutation(api.reviews.addMark);
   const up = useUploads();
   const [text, setText] = useState("");
-  const [atOn, setAtOn] = useState(true);
-  const [at, setAt] = useState(0);
+  const [kind, setKind] = useState<MarkKind>("fix");
   const [busy, setBusy] = useState(false);
   const [drag, setDrag] = useState(false);
-  // Follow the player while the box is empty, so the time is where you paused
-  useEffect(() => {
-    const p = player.current;
-    if (!p) return;
-    const tick = () => !text && setAt(p.currentTime);
-    p.addEventListener("timeupdate", tick);
-    p.addEventListener("seeked", tick);
-    return () => {
-      p.removeEventListener("timeupdate", tick);
-      p.removeEventListener("seeked", tick);
-    };
-  }, [player, text, version]);
   const send = async () => {
     const t = text.trim();
     if ((!t && !up.ready.length) || busy || up.busy) return;
     setBusy(true);
     try {
-      await add({ id: editId, versionNumber: version, text: t, at: atOn ? Math.round(at * 10) / 10 : null, attachments: up.ready });
+      await add({
+        id: reviewId,
+        roundNumber: round,
+        fileIndex: pending?.fileIndex ?? fileIndex,
+        page: pending?.page ?? 1,
+        x: pending ? pending.x : null,
+        y: pending ? pending.y : null,
+        markKind: kind,
+        text: t,
+        attachments: up.ready,
+      });
       setText("");
       up.clear();
+      onClearPin();
     } finally {
       setBusy(false);
     }
@@ -721,11 +904,33 @@ function Composer({ editId, version, player }: { editId: Id<"editVideos">; versi
         }}
         className={`rounded-xl bg-(--c-b-ffffff) ring-1 ${drag ? "ring-2 ring-(--c-l-2358d8)" : "ring-(--c-l-e3e3e0) focus-within:ring-(--c-l-c9c9c9)"}`}
       >
+        <div className="flex flex-wrap items-center gap-1 px-2.5 pt-2.5" role="radiogroup" aria-label="What kind of mark">
+          {MARK_KINDS.map((k) => {
+            const on = k.value === kind;
+            return (
+              <button
+                key={k.value}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => setKind(k.value)}
+                title={`${k.label} (${k.colorName})`}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] ring-1 ${
+                  on ? "bg-(--c-b-f1f1ef) font-medium text-(--c-t-1b1b1b) ring-(--c-l-d6d6d6)" : "text-(--c-t-737373) ring-transparent hover:text-(--c-t-1b1b1b)"
+                }`}
+              >
+                <span style={{ color: k.hex }} aria-hidden="true">
+                  {k.glyph}
+                </span>
+                {k.label}
+              </button>
+            );
+          })}
+        </div>
         <PendingStrip up={up} />
         <textarea
           value={text}
           rows={2}
-          onFocus={() => player.current?.pause()}
           onChange={(e) => setText(e.target.value)}
           onPaste={(e) => {
             const files = Array.from(e.clipboardData.files).filter((f) => /^(image|video)\//.test(f.type));
@@ -740,20 +945,31 @@ function Composer({ editId, version, player }: { editId: Id<"editVideos">; versi
               void send();
             }
           }}
-          placeholder="What should change? Paste images or videos too (⌘↵ to post)"
-          aria-label="Comment"
-          className="block w-full resize-none bg-transparent px-3.5 pt-3 text-[14px] leading-[1.5] text-(--c-t-1b1b1b) outline-none placeholder:text-(--c-t-9a9a9a)"
+          placeholder="What has to change? Paste photos or cutsheets too (⌘↵ to post)"
+          aria-label="Mark"
+          className="block w-full resize-none bg-transparent px-3.5 pt-2.5 text-[14px] leading-[1.5] text-(--c-t-1b1b1b) outline-none placeholder:text-(--c-t-9a9a9a)"
         />
         <div className="flex items-center gap-2 px-2.5 pb-2.5">
-          <button
-            type="button"
-            onClick={() => setAtOn(!atOn)}
-            aria-pressed={atOn}
-            title={atOn ? "Pinned to this moment in the video. Click for a general comment." : "A general comment. Click to pin it to the current moment."}
-            className={`inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12.5px] tabular-nums ${atOn ? "bg-(--c-b-e7eefb) font-medium text-(--c-t-2358d8)" : "text-(--c-t-9a9a9a) ring-1 ring-(--c-l-e3e3e0)"}`}
-          >
-            {atOn ? `at ${clock(at)}` : "No time"}
-          </button>
+          {pending ? (
+            <button
+              type="button"
+              onClick={onClearPin}
+              title="Pinned to a point on the sheet. Click to put the mark on the whole sheet instead."
+              className="inline-flex h-7 items-center gap-1 rounded-md bg-(--c-b-e7eefb) px-2 text-[12.5px] font-medium text-(--c-t-2358d8)"
+            >
+              Pinned
+              <IconX size={10} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onStartPin}
+              title="Pin this mark to a point on the sheet (N)"
+              className="inline-flex h-7 items-center rounded-md px-2 text-[12.5px] text-(--c-t-9a9a9a) ring-1 ring-(--c-l-e3e3e0) hover:text-(--c-t-1b1b1b)"
+            >
+              {sheetName ? `On ${sheetName.replace(/\.[^.]+$/, "")}` : "On this sheet"}
+            </button>
+          )}
           <AttachButton up={up} />
           <span className="flex-1" />
           <button
@@ -762,205 +978,10 @@ function Composer({ editId, version, player }: { editId: Id<"editVideos">; versi
             onClick={() => void send()}
             className="h-8 rounded-lg bg-(--c-b-1b1b1b) px-3.5 text-[13px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333) disabled:opacity-40"
           >
-            {up.busy ? "Uploading…" : "Comment"}
+            {up.busy ? "Uploading…" : "Mark"}
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-type Word = { w: string; s: number; e: number };
-type TranscriptData = { status: "working" | "done" | "failed" | "unavailable"; words: Word[]; error?: string } | null;
-
-/** Words in short lines: a new line after a pause, or at a sentence end once the line is long enough */
-function lines(words: Word[]) {
-  const out: { start: number; words: { w: Word; i: number }[] }[] = [];
-  words.forEach((w, i) => {
-    const cur = out[out.length - 1];
-    const prev = cur?.words[cur.words.length - 1]?.w;
-    if (!cur || (prev && (w.s - prev.e > 1 || (/[.!?]$/.test(prev.w) && cur.words.length >= 8) || cur.words.length >= 30))) out.push({ start: w.s, words: [{ w, i }] });
-    else cur.words.push({ w, i });
-  });
-  return out;
-}
-
-/**
- * The version's transcript. Select any words to comment on just that part (the comment keeps the quote and
- * its moment in the video); parts with comments are highlighted. Click a word to play from there.
- */
-function Transcript({
-  editId,
-  version,
-  versionId,
-  transcript,
-  comments,
-  seek,
-}: {
-  editId: Id<"editVideos">;
-  version: number;
-  versionId: string;
-  transcript: TranscriptData;
-  comments: CommentData[];
-  seek: (t: number) => void;
-}) {
-  const retry = useMutation(api.editFeed.retranscribe);
-  const add = useMutation(api.editFeed.addComment);
-  const words = useMemo(() => (transcript?.status === "done" ? transcript.words : []), [transcript]);
-  const box = useRef<HTMLDivElement>(null);
-  const [sel, setSel] = useState<{ from: number; to: number; top: number; left: number } | null>(null);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const up = useUploads();
-
-  // Words that already have a comment on them
-  const commented = useMemo(() => {
-    const set = new Set<number>();
-    for (const c of comments) {
-      if (c.at === null || c.end === null || !c.quote) continue;
-      words.forEach((w, i) => w.s >= c.at! - 0.01 && w.e <= c.end! + 0.01 && set.add(i));
-    }
-    return set;
-  }, [comments, words]);
-
-  const pick = () => {
-    const s = window.getSelection();
-    const b = box.current;
-    if (!s || s.isCollapsed || !b || !b.contains(s.anchorNode) || !b.contains(s.focusNode)) return;
-    // Which word a selection end is in; one in the space after word i snaps to the next word (start) or to i (end)
-    const idx = (n: Node | null, isStart: boolean) => {
-      const el = n?.nodeType === 1 ? (n as Element) : n?.parentElement;
-      const w = el?.closest("[data-w]") as HTMLElement | null;
-      if (w) return Number(w.dataset.w);
-      const g = el?.closest("[data-g]") as HTMLElement | null;
-      if (!g) return null;
-      const i = Number(g.dataset.g);
-      return isStart ? Math.min(i + 1, words.length - 1) : i;
-    };
-    const r = s.getRangeAt(0);
-    const a = idx(r.startContainer, true);
-    const z = idx(r.endContainer, false);
-    if (a === null || z === null) return;
-    const rect = r.getBoundingClientRect();
-    const br = b.getBoundingClientRect();
-    setSel({ from: Math.min(a, z), to: Math.max(a, z), top: rect.bottom - br.top + b.scrollTop + 8, left: Math.max(8, Math.min(rect.left - br.left, br.width - 330)) });
-    setText("");
-  };
-
-  const post = async () => {
-    if (!sel || busy || up.busy || (!text.trim() && !up.ready.length)) return;
-    setBusy(true);
-    try {
-      const ws = words.slice(sel.from, sel.to + 1);
-      await add({ id: editId, versionNumber: version, text: text.trim(), at: ws[0].s, end: ws[ws.length - 1].e, quote: ws.map((w) => w.w).join(" "), attachments: up.ready });
-      setSel(null);
-      setText("");
-      up.clear();
-      window.getSelection()?.removeAllRanges();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!transcript || transcript.status !== "done") {
-    const msg =
-      !transcript
-        ? "This version was added before transcripts existed."
-        : transcript.status === "working"
-          ? "Transcribing…"
-          : transcript.status === "unavailable"
-            ? "Transcripts aren't switched on yet: a speech-to-text key needs adding to Native Note."
-            : `Couldn't transcribe this version${transcript.error ? `: ${transcript.error}` : "."}`;
-    return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-[13.5px] text-(--c-t-8a8a8a)">
-        {transcript?.status === "working" && <span className="h-2 w-2 animate-pulse rounded-full bg-(--c-b-2358d8)" />}
-        <p className="m-0 max-w-[340px]">{msg}</p>
-        {transcript?.status !== "working" && (
-          <button type="button" onClick={() => void retry({ versionId: versionId as Id<"editVersions"> })} className="h-8 rounded-lg px-3 text-[13px] font-medium text-(--c-t-2358d8) ring-1 ring-(--c-l-e3e3e0) hover:bg-(--c-b-f4f4f4)">
-            {transcript ? "Try again" : "Transcribe"}
-          </button>
-        )}
-      </div>
-    );
-  }
-  if (!words.length) return <div className="flex flex-1 items-center justify-center text-[13.5px] text-(--c-t-9a9a9a)">No speech in this version.</div>;
-
-  return (
-    <div ref={box} onMouseUp={() => setTimeout(pick, 0)} className="relative min-h-0 flex-1 overflow-y-auto px-6 py-5">
-      <p className="m-0 mb-3 text-[12.5px] text-(--c-t-9a9a9a)">Select words to comment on that part.</p>
-      {lines(words).map((l) => (
-        <p key={l.start} className="m-0 mb-3.5 flex gap-3 text-[15.5px] leading-[1.75]">
-          <button type="button" onClick={() => seek(l.start)} className="mt-[5px] h-5 shrink-0 select-none rounded px-1 text-[11.5px] tabular-nums text-(--c-t-b0b0b0) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-2358d8)">
-            {clock(l.start)}
-          </button>
-          <span className="min-w-0 text-(--c-t-262626)">
-            {l.words.map(({ w, i }) => (
-              <span key={i} data-g={i}>
-                <span
-                  data-w={i}
-                  onClick={() => !window.getSelection()?.toString() && seek(w.s)}
-                  className={`cursor-text rounded-[3px] ${
-                    sel && i >= sel.from && i <= sel.to ? "bg-(--selection)" : commented.has(i) ? "bg-(--comment-highlight) shadow-[0_2px_0_var(--comment-underline)]" : "hover:bg-(--c-b-f4f4f4)"
-                  }`}
-                >
-                  {w.w}
-                </span>{" "}
-              </span>
-            ))}
-          </span>
-        </p>
-      ))}
-      {sel && (
-        <div
-          style={{ top: sel.top, left: sel.left }}
-          onMouseUp={(e) => e.stopPropagation()}
-          className="absolute z-10 w-[320px] rounded-xl bg-(--c-b-ffffff) p-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.14)] ring-1 ring-(--c-l-ebebeb)"
-        >
-          <div className="mb-1.5 line-clamp-2 border-l-2 border-(--comment-underline) pl-2 text-[12.5px] italic text-(--c-t-737373)">
-            “{words.slice(sel.from, sel.to + 1).map((w) => w.w).join(" ")}”
-          </div>
-          <PendingStrip up={up} />
-          <textarea
-            autoFocus
-            value={text}
-            rows={2}
-            onChange={(e) => setText(e.target.value)}
-            onPaste={(e) => {
-              const files = Array.from(e.clipboardData.files).filter((f) => /^(image|video)\//.test(f.type));
-              if (files.length) {
-                e.preventDefault();
-                up.add(files);
-              }
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                void post();
-              } else if (e.key === "Escape") {
-                e.stopPropagation();
-                setSel(null);
-              }
-            }}
-            placeholder="Comment on this part…"
-            className="mt-1 block w-full resize-none rounded-lg bg-(--c-b-fafaf9) px-2.5 py-2 text-[13.5px] leading-[1.5] text-(--c-t-1b1b1b) outline-none ring-1 ring-(--c-l-ebebeb) focus:ring-(--c-l-c9c9c9)"
-          />
-          <div className="mt-2 flex items-center gap-1.5">
-            <AttachButton up={up} />
-            <span className="flex-1" />
-            <button type="button" onClick={() => setSel(null)} className="h-7 rounded-md px-2.5 text-[12.5px] text-(--c-t-737373) hover:bg-(--c-b-f4f4f4)">
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={busy || up.busy || (!text.trim() && !up.ready.length)}
-              onClick={() => void post()}
-              className="h-7 rounded-md bg-(--c-b-1b1b1b) px-3 text-[12.5px] font-medium text-(--c-on-ink) hover:bg-(--c-b-333333) disabled:opacity-40"
-            >
-              {up.busy ? "Uploading…" : "Comment"}
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

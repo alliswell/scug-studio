@@ -10,6 +10,10 @@ if (JSON.parse(readFileSync(new URL("package.json", pkg))).version !== "0.18.1")
 const runtime = ts.transpileModule(readFileSync(new URL("src/lib/boardGradient.ts", root), "utf8"), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 }).outputText.replace(/^export /gm, "");
+// These two markers keep their original wording on purpose. They are written into the installed
+// Excalidraw bundle, and --check strips them back out before hashing it. Renaming them makes every
+// already-patched node_modules fail that hash check until it is reinstalled, which buys nothing:
+// nobody sees these strings.
 const start = "/* Native Note gradient runtime start */";
 const end = "/* Native Note gradient runtime end */";
 const patches = [

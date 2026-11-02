@@ -6,37 +6,67 @@ import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { clubStatusOf } from "@/lib/types";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { usePresence } from "@/lib/usePresence";
 import { IconBoard, IconPin, IconPlus, IconSearch } from "./icons";
-import { openCommandPalette } from "./CommandPalette";
-import { FormatIcon } from "./FormatIcon";
+import { TypeIcon } from "./TypeIcon";
 import { ThemeToggle } from "./ThemeToggle";
 
 export type View =
   | "home"
   | "list"
   | "calendar"
-  | "kanban"
+  | "board"
   | "journal"
   | "feed"
+  | "clubs"
+  | "reviews"
   | "mymind"
   | "library"
-  | "tweet"
-  | "brands"
   | "boards"
-  | "topics"
-  | "youtube"
-  | "editfeed"
   | "scratchboards"
   | "pdfs";
-export type SponsorFilter = "all" | "sponsored" | "notSponsored";
+
+/**
+ * Every view, with the name the browser tab shows. This is the one place the view strings are
+ * written down: the home page derives its tab-title map and its ?view= whitelist from here, so a
+ * new view can't be half-registered.
+ */
+export const VIEWS: { view: View; title: string }[] = [
+  { view: "home", title: "Home" },
+  { view: "list", title: "Projects" },
+  { view: "calendar", title: "Calendar" },
+  { view: "board", title: "Board" },
+  { view: "journal", title: "Journal" },
+  { view: "feed", title: "Feed" },
+  { view: "clubs", title: "Clubs" },
+  { view: "reviews", title: "Reviews" },
+  { view: "mymind", title: "References" },
+  { view: "library", title: "Library" },
+  { view: "boards", title: "Excalidraw" },
+  { view: "scratchboards", title: "Scratchboard" },
+  { view: "pdfs", title: "PDFs" },
+];
+
+export const isView = (v: string): v is View => VIEWS.some((x) => x.view === v);
+
+/**
+ * The two custom events the shell speaks. They're dispatched in one file and listened for in
+ * another, so they live here as constants — a typo in a string literal would break view switching
+ * without the compiler saying a word.
+ */
+export const STUDIO_VIEW_EVENT = "studio:view";
+export const STUDIO_PALETTE_EVENT = "studio:palette";
+
+/** Ask the ⌘K switcher to open (e.g. from a button) */
+export const openCommandPalette = () => window.dispatchEvent(new Event(STUDIO_PALETTE_EVENT));
 
 export const SIDEBAR_WIDTH = 252;
 
 /**
  * Whether the app sidebar is shown. Remembered per browser on computers (the same setting on every
- * page, so it stays put going from the Scripts list into a script); always starts closed on phones.
+ * page, so it stays put going from the Projects list into a project); always starts closed on phones.
  */
 function useSidebarState() {
   const mobile = useIsMobile();
@@ -68,8 +98,8 @@ const Shell = createContext<{
   side: SidebarState;
   view: View;
   setView: (v: View) => void;
-  /** The Scripts page swaps in its own New script (it starts one that matches its filters) */
-  newScript: RefObject<(() => void) | null>;
+  /** The Projects page swaps in its own New project (it starts one that matches its filters) */
+  newProject: RefObject<(() => void) | null>;
 } | null>(null);
 
 /** The app sidebar's open/closed state (shared by every page inside the app shell) */
@@ -87,6 +117,9 @@ export function useMaybeAppSidebar(): SidebarState | null {
 /** Whether this tab has moved between pages inside the app since it loaded (so Back stays in the app) */
 let movedInApp = false;
 
+/** The pages that live inside the app shell: a project, a board, a club, a scratchboard, a PDF. */
+const IN_APP_PATH = /^\/(?:p|b|c|sb|pdf)\/([^/]+)/;
+
 /**
  * A back arrow: returns to the page you came from (with its view, filters and scroll, like the browser's Back),
  * or to `fallback` when this page was opened directly (a link, a new tab, a reload).
@@ -100,23 +133,23 @@ export function useGoBack(fallback: string) {
   };
 }
 
-/** The Scripts page's open view, kept in the shell so the sidebar can highlight it */
+/** The Projects page's open view, kept in the shell so the sidebar can highlight it */
 export function useHomeView() {
   const ctx = useContext(Shell);
   if (!ctx) throw new Error("useHomeView needs AppShell");
-  return { view: ctx.view, setView: ctx.setView, newScript: ctx.newScript };
+  return { view: ctx.view, setView: ctx.setView, newProject: ctx.newProject };
 }
 
 /**
  * Holds the sidebar for every signed-in page. It lives in the layout, so it stays mounted while you
- * move between scripts, boards and the Scripts page: no reloading, no flicker.
+ * move between projects, boards and the Projects page: no reloading, no flicker.
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const side = useSidebarState();
   const [view, setView] = useState<View>("home");
-  const newScript = useRef<(() => void) | null>(null);
+  const newProject = useRef<(() => void) | null>(null);
   const pathname = usePathname();
-  const active = pathname.match(/^\/(?:v|b)\/([^/]+)/)?.[1];
+  const active = pathname.match(IN_APP_PATH)?.[1];
   // Note when you move to another page inside the app, so back arrows can use the browser's Back
   const firstPath = useRef(pathname);
   useEffect(() => {
@@ -126,7 +159,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (side.mobile) side.toggle(false);
   };
   return (
-    <Shell.Provider value={{ side, view, setView, newScript }}>
+    <Shell.Provider value={{ side, view, setView, newProject }}>
       <div className="relative flex min-h-screen bg-(--c-b-ffffff)">
         <SidebarFrame state={side}>
           <HomeSidebar
@@ -141,7 +174,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   }
                 : undefined
             }
-            onNewScript={pathname === "/" ? () => newScript.current?.() : undefined}
+            onNewProject={pathname === "/" ? () => newProject.current?.() : undefined}
             onNavigate={closeOnPhone}
             activeId={active}
             onClose={() => side.toggle(false)}
@@ -221,24 +254,24 @@ export function ShowSidebarButton({
 }
 
 /**
- * The app's left sidebar, the same on every page: search and New script, the script views, what's
- * pinned (scripts and boards), the apps, and your account at the bottom.
+ * The app's left sidebar, the same on every page: search and New project, the project views, the
+ * clubs, what's pinned (projects and boards), the apps, and your account at the bottom.
  */
 export function HomeSidebar({
   view,
   onView,
   onClose,
-  onNewScript,
+  onNewProject,
   activeId,
   onNavigate,
 }: {
-  /** The open view on the Scripts page; null on other pages */
+  /** The open view on the Projects page; null on other pages */
   view: View | null;
-  /** Switch view on the Scripts page; elsewhere the sidebar opens the Scripts page at that view */
+  /** Switch view on the Projects page; elsewhere the sidebar opens the Projects page at that view */
   onView?: (v: View) => void;
   onClose: () => void;
-  onNewScript?: () => void;
-  /** The script or board open right now, to highlight it under Pinned */
+  onNewProject?: () => void;
+  /** The project, club or board open right now, to highlight it */
   activeId?: string;
   /** After any item is picked (closes the drawer on phones) */
   onNavigate?: () => void;
@@ -246,17 +279,18 @@ export function HomeSidebar({
   const router = useRouter();
   const pathname = usePathname();
   const pinned = useQuery(api.boards.pinned);
-  const unpinScript = useMutation(api.videos.setPinned);
+  const clubs = useQuery(api.clubs.list);
+  const unpinProject = useMutation(api.projects.setPinned);
   const unpinBoard = useMutation(api.boards.setPinned);
-  const create = useMutation(api.videos.create);
+  const create = useMutation(api.projects.create);
   const [creating, setCreating] = useState(false);
-  // The team's Todo list sits above Scripts for everyone
+  // The team's Todo list sits above Projects for everyone
   const todo = useQuery(api.todo.get);
   const openTodoM = useMutation(api.todo.open);
   const openTodo = async () => {
     onNavigate?.();
     const id = todo?.id ?? (await openTodoM());
-    if (activeId !== id) router.push(`/v/${id}`);
+    if (activeId !== id) router.push(`/p/${id}`);
   };
   // Apps are hidden until you pin them (the + next to Apps)
   const myApps = useQuery(api.prefs.apps);
@@ -270,16 +304,15 @@ export function HomeSidebar({
     try {
       localStorage.setItem("home-view", v);
     } catch {}
-    if (pathname === "/")
-      window.dispatchEvent(new CustomEvent("native-note:view", { detail: v }));
+    if (pathname === "/") window.dispatchEvent(new CustomEvent<View>(STUDIO_VIEW_EVENT, { detail: v }));
     router.push(`/?view=${v}`);
   };
-  const newScript = async () => {
+  const newProject = async () => {
     onNavigate?.();
-    if (onNewScript) return onNewScript();
+    if (onNewProject) return onNewProject();
     setCreating(true);
     try {
-      router.push(`/v/${await create({ format: "long" })}`);
+      router.push(`/p/${await create({ type: "physical" })}`);
     } finally {
       setCreating(false);
     }
@@ -297,10 +330,10 @@ export function HomeSidebar({
           aria-hidden="true"
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-(--c-b-1b1b1b) text-[12.5px] font-bold text-(--c-on-ink)"
         >
-          N
+          S
         </span>
         <span className="min-w-0 flex-1 truncate text-[14.5px] font-semibold tracking-[-0.01em] text-(--c-t-1b1b1b)">
-          Native Note
+          Switchyards Studio
         </span>
         <button
           type="button"
@@ -325,11 +358,11 @@ export function HomeSidebar({
         </Item>
         <Item
           on={false}
-          onClick={() => void newScript()}
+          onClick={() => void newProject()}
           disabled={creating}
           icon={<IconPlus size={15} />}
         >
-          New script
+          New project
         </Item>
       </div>
 
@@ -343,12 +376,38 @@ export function HomeSidebar({
           </Item>
         </div>
 
-        <Group label="Scripts">
-          {nav("list", "All scripts", <ListIcon />)}
+        <Group label="Projects">
+          {nav("list", "All projects", <ListIcon />)}
           {nav("calendar", "Calendar", <CalendarIcon />)}
-          {nav("kanban", "Kanban", <KanbanIcon />)}
+          {nav("board", "Board", <ColumnsIcon />)}
+          {nav("reviews", "Reviews", <ReviewsIcon />)}
           {nav("journal", "Journal", <JournalIcon />)}
           {nav("feed", "Feed", <FeedIcon />)}
+        </Group>
+
+        <Group label="Clubs">
+          {nav("clubs", "All clubs", <ClubIcon />)}
+          {(clubs ?? []).map((c) => {
+            const st = clubStatusOf(c.status);
+            return (
+              <Item
+                key={c._id}
+                on={activeId === c._id}
+                onClick={() => {
+                  onNavigate?.();
+                  if (activeId !== c._id) router.push(`/c/${c._id}`);
+                }}
+                icon={
+                  <span style={{ color: st.hex }} title={st.label} aria-label={st.label} className="text-[12px] leading-none">
+                    {st.glyph}
+                  </span>
+                }
+                hint={c.activeCount ? String(c.activeCount) : undefined}
+              >
+                {c.name.trim() || "Untitled club"}
+              </Item>
+            );
+          })}
         </Group>
 
         {!!pinned?.length && (
@@ -360,13 +419,13 @@ export function HomeSidebar({
                 onClick={() => {
                   onNavigate?.();
                   if (activeId !== p.id)
-                    router.push(p.kind === "board" ? `/b/${p.id}` : `/v/${p.id}`);
+                    router.push(p.kind === "board" ? `/b/${p.id}` : `/p/${p.id}`);
                 }}
                 icon={
                   p.kind === "board" ? (
                     <IconBoard size={15} />
-                  ) : p.format ? (
-                    <FormatIcon format={p.format} size={13} />
+                  ) : p.type ? (
+                    <TypeIcon type={p.type} size={13} />
                   ) : (
                     <DocIcon />
                   )
@@ -380,8 +439,8 @@ export function HomeSidebar({
                           id: p.id as Id<"boards">,
                           pinned: false,
                         })
-                      : void unpinScript({
-                          id: p.id as Id<"videos">,
+                      : void unpinProject({
+                          id: p.id as Id<"projects">,
                           pinned: false,
                         }),
                 }}
@@ -639,48 +698,24 @@ function DocIcon() {
   );
 }
 
-function TrendIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M2 12l4-4 2.5 2.5L14 5" />
-      <path d="M10 5h4v4" />
-    </svg>
-  );
-}
-
-function EditFeedIcon() {
+/** A storefront: the clubs themselves */
+function ClubIcon() {
   return (
     <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="4.25" y="1.75" width="7.5" height="12.5" rx="1.75" />
-      <path d="M7 6.25v3.5L10 8 7 6.25Z" />
+      <path d="M2.25 6.25h11.5v7.5H2.25z" />
+      <path d="M1.75 6.25 3.5 2.75h9l1.75 3.5" />
+      <path d="M6.5 13.75v-4h3v4" />
     </svg>
   );
 }
 
-function YouTubeIcon() {
+/** A sheet with a mark on it: review rounds */
+function ReviewsIcon() {
   return (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="1.75" y="3.25" width="12.5" height="9.5" rx="2.5" />
-      <path d="M6.75 6v4l3.5-2-3.5-2Z" fill="currentColor" />
+    <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2.25" y="2.25" width="11.5" height="11.5" rx="1.5" />
+      <path d="M4.75 5.25h6.5M4.75 7.75h3.5" />
+      <circle cx="10.75" cy="10.75" r="1.75" />
     </svg>
   );
 }
@@ -757,38 +792,6 @@ function MindIcon() {
   );
 }
 
-function BrandIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M2.25 8.6V3.25a1 1 0 0 1 1-1H8.6l5.15 5.15a1 1 0 0 1 0 1.41l-4.94 4.94a1 1 0 0 1-1.41 0L2.25 8.6Z" />
-      <circle cx="5.5" cy="5.5" r="1" />
-    </svg>
-  );
-}
-
-function TweetIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M9.47 6.77 14.3 1.25h-1.15L8.96 6.04 5.62 1.25H1.75l5.07 7.28-5.07 5.82H2.9l4.43-5.09 3.54 5.09h3.87L9.47 6.77Zm-1.57 1.8-.51-.72-4.08-5.76h1.76l3.29 4.65.51.72 4.28 6.05h-1.76L7.9 8.57Z" />
-    </svg>
-  );
-}
-
 function LibraryIcon() {
   return (
     <svg
@@ -844,7 +847,7 @@ function CalendarIcon() {
   );
 }
 
-function KanbanIcon() {
+function ColumnsIcon() {
   return (
     <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden="true">
       <rect x="1.75" y="2.25" width="3.5" height="11.5" rx="1" />
@@ -874,16 +877,11 @@ function ScratchIcon() {
 
 /** Every app; each person pins the ones they want in their sidebar */
 const APPS: { view: View; label: string; icon: ReactNode }[] = [
-  { view: "mymind", label: "Mymind", icon: <MindIcon /> },
+  { view: "mymind", label: "References", icon: <MindIcon /> },
   { view: "library", label: "Library", icon: <LibraryIcon /> },
   { view: "boards", label: "Excalidraw", icon: <DrawIcon /> },
   { view: "scratchboards", label: "Scratchboard", icon: <ScratchIcon /> },
   { view: "pdfs", label: "PDFs", icon: <PdfIcon /> },
-  { view: "tweet", label: "Tweet", icon: <TweetIcon /> },
-  { view: "brands", label: "Brand deals", icon: <BrandIcon /> },
-  { view: "topics", label: "Topic opportunities", icon: <TrendIcon /> },
-  { view: "youtube", label: "YouTube", icon: <YouTubeIcon /> },
-  { view: "editfeed", label: "Edit Feed", icon: <EditFeedIcon /> },
 ];
 
 function TodoIcon() {

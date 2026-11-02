@@ -83,7 +83,7 @@ export function BoardEditor({ id, onClose, readOnly, focus }: { id: string; onCl
     return () => mq.removeEventListener("change", update);
   }, []);
   /** What's selected right now (drives the phone action bar) */
-  // Pencil mode (Riley's drawing-board style), saved with the board
+  // Pencil mode (the hand-drawn board style), saved with the board
   const [pencil, setPencil] = useState(false);
   const pencilRef = useRef(false);
   useEffect(() => {
@@ -245,8 +245,8 @@ export function BoardEditor({ id, onClose, readOnly, focus }: { id: string; onCl
   }, [flush]);
 
   /**
-   * Pasted or dropped images become files in Native Note storage, added to the board the moment they're stored.
-   * A picture pasted from another board is already a Native Note link: this board gets its own copy of it.
+   * Pasted or dropped images become files in this app's storage, added to the board the moment they're stored.
+   * A picture pasted from another board is already a link into our own storage: this board gets its own copy of it.
    */
   const storeFiles = async (map: Record<string, BinaryFile>) => {
     for (const f of Object.values(map)) {

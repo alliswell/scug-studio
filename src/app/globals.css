@@ -33,7 +33,7 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* To-dos in scripts: a soft rounded box that fills in with a check */
+/* To-dos in documents: a soft rounded box that fills in with a check */
 .nn-check {
   appearance: none;
   -webkit-appearance: none;
@@ -78,8 +78,8 @@ body {
   background: var(--comment-highlight-hover);
 }
 
-/* Links inside script lines */
-.script-link {
+/* Links inside document lines */
+.doc-link {
   color: var(--link);
   text-decoration: underline;
   text-decoration-color: var(--link-underline);
@@ -89,12 +89,12 @@ body {
   border-radius: 3px;
   transition: text-decoration-color 120ms ease;
 }
-.script-link:hover {
+.doc-link:hover {
   text-decoration-color: var(--link);
 }
 
-/* A script mentioned with @ (the Todo list) */
-.script-pill {
+/* A project mentioned with @ (the Todo list) */
+.doc-pill {
   display: inline-flex;
   align-items: center;
   gap: 0.3em;
@@ -112,7 +112,7 @@ body {
   cursor: pointer;
   vertical-align: baseline;
 }
-.script-pill::before {
+.doc-pill::before {
   content: "";
   width: 0.85em;
   height: 0.85em;
@@ -122,15 +122,15 @@ body {
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'%3E%3Cpath d='M3.5 1.75h6l3 3v9.5h-9z'/%3E%3Cpath d='M9.5 1.75v3h3M5.75 8.5h4.5M5.75 11h3'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round'%3E%3Cpath d='M3.5 1.75h6l3 3v9.5h-9z'/%3E%3Cpath d='M9.5 1.75v3h3M5.75 8.5h4.5M5.75 11h3'/%3E%3C/svg%3E") center / contain no-repeat;
 }
-.script-pill:hover {
+.doc-pill:hover {
   background: var(--c-b-e6e6e3);
 }
 
-.script-bold {
+.doc-bold {
   font-weight: 650;
 }
 
-/* Board blocks: the picker pops in; an opened board fades and rises over the script */
+/* Board blocks: the picker pops in; an opened board fades and rises over the document */
 @keyframes board-pop { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
 @keyframes board-fade { from { opacity: 0 } to { opacity: 1 } }
 @keyframes board-in { from { opacity: 0; transform: translateY(12px) scale(0.985) } to { opacity: 1; transform: none } }
@@ -232,7 +232,7 @@ body {
 }
 
 /* Overview views: one shared whiteboard surface (soft grain and a faint dot grid behind the content) */
-.nn-whiteboard {
+.studio-whiteboard {
   --wb-base: #fafaf8;
   --wb-dot: rgba(60, 60, 50, 0.085);
   --wb-grain-opacity: 0.05;
@@ -242,7 +242,7 @@ body {
   background-attachment: local;
   isolation: isolate;
 }
-.nn-whiteboard::before {
+.studio-whiteboard::before {
   content: "";
   position: fixed;
   inset: 0;
@@ -252,11 +252,11 @@ body {
   mix-blend-mode: multiply;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.3 0 0 0 0 0.3 0 0 0 0 0.28 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-.dark .nn-whiteboard {
+.dark .studio-whiteboard {
   --wb-base: #1c1c1b;
   --wb-dot: rgba(255, 255, 255, 0.055);
   --wb-grain-opacity: 0.07;
 }
-.dark .nn-whiteboard::before {
+.dark .studio-whiteboard::before {
   mix-blend-mode: screen;
 }

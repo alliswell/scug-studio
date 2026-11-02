@@ -1,11 +1,11 @@
-// @ts-nocheck
 /* eslint-disable */
-// Riley's "drawing board" style engine (sketch-kit.js from the Drawing Board Style artifact,
+// @ts-nocheck
+// The "drawing board" style engine (sketch-kit.js from the Drawing Board Style artifact,
 // https://claude.ai/artifact/5X7A8YuaeKiLrk74taN6vx), unchanged apart from being wrapped as a module.
 // Browser only: import it lazily from client code.
 const holder: any = {};
 /* =====================================================================
-   SKETCH KIT — the "drawing board" look from Riley's LLM Funnel short
+   SKETCH KIT — the "drawing board" look
    (video #18, v1 + v2). Extracted from the real render engine:
      ~/Downloads/video-production-2/llm-funnel-whiteboard/engine.js
      ~/Downloads/video-production-2/llm-funnel-whiteboard/player.js

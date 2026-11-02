@@ -1,30 +1,51 @@
-import { useId } from "react";
-import type { VideoFormat } from "@/lib/types";
+import type { ProjectType } from "@/lib/types";
+import { typeLabel } from "@/lib/types";
 
-/** Long-form shows the YouTube logo, short-form the Instagram logo. */
-export function FormatIcon({ format, size = 18 }: { format: VideoFormat; size?: number }) {
-  const grad = `ig-${useId().replace(/:/g, "")}`;
-  if (format === "long")
+/**
+ * What kind of work this is, as a shape rather than a brand mark: a room with a doorway for a
+ * build-out, a framed screen for digital work. Drawn in the current text colour so it reads the
+ * same in both themes, and labelled, because the two never differ by colour alone.
+ */
+export function TypeIcon({ type, size = 18, className = "" }: { type: ProjectType; size?: number; className?: string }) {
+  const label = typeLabel(type);
+  if (type === "digital")
     return (
-      <svg viewBox="0 0 28 20" width={size * 1.12} height={size * 0.8} role="img" aria-label="Long-form (YouTube)">
-        <rect width="28" height="20" rx="5.5" fill="#FF0000" />
-        <path d="M11.2 5.8v8.4L18.4 10z" fill="#FFFFFF" />
+      <svg
+        viewBox="0 0 16 16"
+        width={size}
+        height={size}
+        role="img"
+        aria-label={label}
+        className={className}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="1.75" y="2.75" width="12.5" height="9" rx="1.5" />
+        <path d="M4.25 5.25h7.5M4.25 7.5h4.5M5.75 14h4.5M8 11.75V14" />
       </svg>
     );
   return (
-    <svg viewBox="0 0 24 24" width={size} height={size} role="img" aria-label="Short-form (Instagram)">
-      <defs>
-        <radialGradient id={grad} cx="0.3" cy="1.07" r="1.3">
-          <stop offset="0" stopColor="#FDD56B" />
-          <stop offset="0.3" stopColor="#F7743B" />
-          <stop offset="0.6" stopColor="#D62976" />
-          <stop offset="1" stopColor="#6A3BD1" />
-        </radialGradient>
-      </defs>
-      <rect width="24" height="24" rx="6.5" fill={`url(#${grad})`} />
-      <rect x="5.2" y="5.2" width="13.6" height="13.6" rx="4.2" fill="none" stroke="#FFFFFF" strokeWidth="1.8" />
-      <circle cx="12" cy="12" r="3.3" fill="none" stroke="#FFFFFF" strokeWidth="1.8" />
-      <circle cx="16.4" cy="7.6" r="1.1" fill="#FFFFFF" />
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      role="img"
+      aria-label={label}
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {/* A room in plan: walls, an interior partition, and a gap where the door swings */}
+      <path d="M1.75 2.75h12.5v10.5H1.75z" />
+      <path d="M7 2.75v4.5M7 10.75v2.5" />
+      <path d="M14.25 6.5h-3.5" />
+      <path d="M10.75 6.5a2.75 2.75 0 0 1-2.75 2.75" />
     </svg>
   );
 }

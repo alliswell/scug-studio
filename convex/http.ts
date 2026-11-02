@@ -1,49 +1,47 @@
 import { httpRouter } from "convex/server";
 import { auth } from "./auth";
 import {
-  httpAddInstructions,
+  httpAddTasks,
   httpComment,
-  httpCreateScript,
-  httpGetScript,
+  httpCreateProject,
+  httpGetProject,
   httpAddBriefLinks,
   httpDeleteComment,
   httpMoveComment,
   httpUpdateComment,
-  httpDeleteInstruction,
+  httpDeleteTask,
   httpEditLines,
-  httpEditScript,
+  httpReplaceDocument,
   httpListVersions,
   httpRemoveBriefLinks,
-  httpRemoveCaption,
   httpRestoreVersion,
-  httpAddIdeas,
-  httpListIdeas,
+  httpAddReferences,
+  httpListReferences,
   httpListBoards,
-  httpListTopics,
   httpCreateBoard,
   httpAddToBoard,
   httpEditBoard,
-  httpAddTopics,
-  httpUpdateTopic,
-  httpFinishTopicRun,
-  httpTopicRuns,
-  httpTopicHistory,
   httpGetBoard,
   httpAddUpdate,
-  httpListScripts,
+  httpListProjects,
   httpSetBrief,
-  httpSetCaption,
-  httpUpdateInstruction,
+  httpUpdateTask,
   httpSuggestEdit,
-  httpUpdateDetails,
+  httpUpdateProject,
   httpPinBoard,
-  httpEditVideos,
-  httpEditVideo,
-  httpAddEditVideo,
-  httpAddEditVersion,
-  httpCommentEditVideo,
-  httpEditStatus,
-  httpPinScript,
+  httpListClubs,
+  httpGetClub,
+  httpCreateClub,
+  httpUpdateClub,
+  httpListReviews,
+  httpGetReview,
+  httpStartReview,
+  httpAddReviewRound,
+  httpMarkReview,
+  httpResolveMark,
+  httpReviewStatus,
+  httpApproveReview,
+  httpPinProject,
   httpAttach,
   httpFile,
   httpUploadUrl,
@@ -55,55 +53,55 @@ const http = httpRouter();
 auth.addHttpRoutes(http);
 
 // Agent API (bearer AGENT_API_KEY). See convex/agent.ts for what each route may change.
+// The paths here and the MCP tool names in convex/mcp.ts are two separate contracts with no shared
+// constant: rename one and you must rename the other, or the guide starts lying to agents.
 http.route({ path: "/agent/help", method: "GET", handler: help });
-http.route({ path: "/agent/scripts", method: "GET", handler: httpListScripts });
-http.route({ path: "/agent/script", method: "GET", handler: httpGetScript });
-http.route({ path: "/agent/scripts", method: "POST", handler: httpCreateScript });
-http.route({ path: "/agent/details", method: "POST", handler: httpUpdateDetails });
+http.route({ path: "/agent/projects", method: "GET", handler: httpListProjects });
+http.route({ path: "/agent/project", method: "GET", handler: httpGetProject });
+http.route({ path: "/agent/projects", method: "POST", handler: httpCreateProject });
+http.route({ path: "/agent/project/update", method: "POST", handler: httpUpdateProject });
 http.route({ path: "/agent/suggest", method: "POST", handler: httpSuggestEdit });
-http.route({ path: "/agent/instructions", method: "POST", handler: httpAddInstructions });
-http.route({ path: "/agent/instruction", method: "POST", handler: httpUpdateInstruction });
-http.route({ path: "/agent/caption", method: "POST", handler: httpSetCaption });
+http.route({ path: "/agent/tasks", method: "POST", handler: httpAddTasks });
+http.route({ path: "/agent/task", method: "POST", handler: httpUpdateTask });
+http.route({ path: "/agent/task/delete", method: "POST", handler: httpDeleteTask });
 http.route({ path: "/agent/brief", method: "POST", handler: httpSetBrief });
 http.route({ path: "/agent/brief-links", method: "POST", handler: httpAddBriefLinks });
+http.route({ path: "/agent/brief-links/delete", method: "POST", handler: httpRemoveBriefLinks });
 http.route({ path: "/agent/update", method: "POST", handler: httpAddUpdate });
 http.route({ path: "/agent/comment", method: "POST", handler: httpComment });
 http.route({ path: "/agent/comment/attach", method: "POST", handler: httpAttach });
-http.route({ path: "/agent/upload-url", method: "POST", handler: httpUploadUrl });
-http.route({ path: "/agent/file", method: "POST", handler: httpFile });
-http.route({ path: "/agent/ideas", method: "POST", handler: httpAddIdeas });
-http.route({ path: "/agent/edit", method: "POST", handler: httpEditScript });
 http.route({ path: "/agent/comment/move", method: "POST", handler: httpMoveComment });
 http.route({ path: "/agent/comment/update", method: "POST", handler: httpUpdateComment });
 http.route({ path: "/agent/comment/delete", method: "POST", handler: httpDeleteComment });
+http.route({ path: "/agent/upload-url", method: "POST", handler: httpUploadUrl });
+http.route({ path: "/agent/file", method: "POST", handler: httpFile });
+http.route({ path: "/agent/replace", method: "POST", handler: httpReplaceDocument });
 http.route({ path: "/agent/edit-lines", method: "POST", handler: httpEditLines });
 http.route({ path: "/agent/versions", method: "GET", handler: httpListVersions });
 http.route({ path: "/agent/restore", method: "POST", handler: httpRestoreVersion });
-http.route({ path: "/agent/instruction/delete", method: "POST", handler: httpDeleteInstruction });
-http.route({ path: "/agent/caption/delete", method: "POST", handler: httpRemoveCaption });
-http.route({ path: "/agent/brief-links/delete", method: "POST", handler: httpRemoveBriefLinks });
-http.route({ path: "/agent/ideas", method: "GET", handler: httpListIdeas });
+http.route({ path: "/agent/pin", method: "POST", handler: httpPinProject });
+http.route({ path: "/agent/references", method: "GET", handler: httpListReferences });
+http.route({ path: "/agent/references", method: "POST", handler: httpAddReferences });
+http.route({ path: "/agent/clubs", method: "GET", handler: httpListClubs });
+http.route({ path: "/agent/club", method: "GET", handler: httpGetClub });
+http.route({ path: "/agent/clubs", method: "POST", handler: httpCreateClub });
+http.route({ path: "/agent/club", method: "POST", handler: httpUpdateClub });
+http.route({ path: "/agent/reviews", method: "GET", handler: httpListReviews });
+http.route({ path: "/agent/review", method: "GET", handler: httpGetReview });
+http.route({ path: "/agent/reviews", method: "POST", handler: httpStartReview });
+http.route({ path: "/agent/review/round", method: "POST", handler: httpAddReviewRound });
+http.route({ path: "/agent/review/mark", method: "POST", handler: httpMarkReview });
+http.route({ path: "/agent/review/mark/resolve", method: "POST", handler: httpResolveMark });
+http.route({ path: "/agent/review/status", method: "POST", handler: httpReviewStatus });
+http.route({ path: "/agent/review/approve", method: "POST", handler: httpApproveReview });
 http.route({ path: "/agent/boards", method: "GET", handler: httpListBoards });
 http.route({ path: "/agent/board", method: "GET", handler: httpGetBoard });
 http.route({ path: "/agent/board/create", method: "POST", handler: httpCreateBoard });
 http.route({ path: "/agent/board/add", method: "POST", handler: httpAddToBoard });
 http.route({ path: "/agent/board/edit", method: "POST", handler: httpEditBoard });
 http.route({ path: "/agent/board/pin", method: "POST", handler: httpPinBoard });
-http.route({ path: "/agent/edit-videos", method: "GET", handler: httpEditVideos });
-http.route({ path: "/agent/edit-video", method: "GET", handler: httpEditVideo });
-http.route({ path: "/agent/edit-video/create", method: "POST", handler: httpAddEditVideo });
-http.route({ path: "/agent/edit-video/version", method: "POST", handler: httpAddEditVersion });
-http.route({ path: "/agent/edit-video/comment", method: "POST", handler: httpCommentEditVideo });
-http.route({ path: "/agent/edit-video/status", method: "POST", handler: httpEditStatus });
-http.route({ path: "/agent/pin", method: "POST", handler: httpPinScript });
-http.route({ path: "/agent/topics", method: "GET", handler: httpListTopics });
-http.route({ path: "/agent/topics", method: "POST", handler: httpAddTopics });
-http.route({ path: "/agent/topic", method: "POST", handler: httpUpdateTopic });
-http.route({ path: "/agent/topics/finish", method: "POST", handler: httpFinishTopicRun });
-http.route({ path: "/agent/topics/runs", method: "GET", handler: httpTopicRuns });
-http.route({ path: "/agent/topics/history", method: "GET", handler: httpTopicHistory });
 
-// MCP server (same key, same safe operations). Composio holds the key as a connected account.
+// MCP server (same key, same safe operations), for tools that hold the key as a connected account.
 http.route({ path: "/mcp", method: "POST", handler: mcpPost });
 http.route({ path: "/mcp", method: "GET", handler: mcpGet });
 
