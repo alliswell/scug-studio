@@ -53,6 +53,20 @@ export function useDocSync(docId: string | null, blocks: Block[] | null) {
     current.current = blocks;
   }, [blocks]);
 
+  /**
+   * Lines typed since the last save landed. Used when the document is swapped out from under the
+   * editor — a restored version, or a full rewrite — so the words can be shown to the person
+   * instead of disappearing with the old document.
+   */
+  const unsaved = useCallback((): Block[] => {
+    const list = current.current;
+    if (!list) return [];
+    return list.filter((b) => {
+      const was = base.current.get(b.id);
+      return b.content.trim() ? !was || was.csig !== contentSigOf(b) : false;
+    });
+  }, []);
+
   /** Call right after loading so the loaded state counts as saved. */
   const seed = useCallback((id: string, loaded: Block[], revs?: Map<string, number>) => {
     base.current = new Map(loaded.map((b, i) => [b.id, baseOf(b, i, revs?.get(b.id) ?? 0)]));
@@ -203,5 +217,5 @@ export function useDocSync(docId: string | null, blocks: Block[] | null) {
     return () => document.removeEventListener("visibilitychange", onHide);
   }, [flush]);
 
-  return { state, flush, seed, mergeServer, clashes, resolve };
+  return { state, flush, seed, mergeServer, clashes, resolve, unsaved };
 }

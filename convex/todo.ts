@@ -35,7 +35,7 @@ export async function ensureTodo(ctx: MutationCtx, userId: Id<"users"> | null): 
   const main = await ctx.db.insert("documents", { projectId, kind: "main", editorName: null, guestToken: null, updatedAt: now });
   await ctx.db.insert("documents", { projectId, kind: "tasks", editorName: null, guestToken: null, updatedAt: now });
   // Start with one empty to-do so the list is ready to type into
-  await ctx.db.insert("blocks", { documentId: main, projectId, key: crypto.randomUUID(), position: 0, type: "todo", content: "", checked: false, color: null, sourceBlockId: null });
+  await ctx.db.insert("blocks", { documentId: main, projectId, key: crypto.randomUUID(), position: 0, type: "todo", content: "", checked: false, color: null, sourceBlockId: null, rev: 1 });
   return projectId;
 }
 
@@ -112,7 +112,7 @@ export const add = mutation({
     if (lone) await ctx.db.patch(lone._id, { content: t, type: "todo", rev: (lone.rev ?? 0) + 1 });
     else {
       const position = blocks.reduce((m, b) => Math.max(m, b.position), -1) + 1;
-      await ctx.db.insert("blocks", { documentId: main._id, projectId, key: crypto.randomUUID(), position, type: "todo", content: t, checked: false, color: null, sourceBlockId: null });
+      await ctx.db.insert("blocks", { documentId: main._id, projectId, key: crypto.randomUUID(), position, type: "todo", content: t, checked: false, color: null, sourceBlockId: null, rev: 1 });
     }
     const now = Date.now();
     await ctx.db.patch(main._id, { updatedAt: now });

@@ -210,6 +210,7 @@ export async function writeEditedVersion(
       ...(b.textColor ? { textColor: b.textColor } : {}),
       ...(b.images ? { images: b.images } : {}),
       ...(b.indent ? { indent: Math.max(0, Math.min(4, Math.round(b.indent))) } : {}),
+      rev: 1,
       ...(b.assignee ? { assignee: b.assignee } : {}),
       sourceBlockId: b.sourceBlockId,
     });

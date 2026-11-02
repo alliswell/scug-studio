@@ -49,6 +49,7 @@ import {
   IconHistory,
   IconPin,
   IconPlus,
+  IconX,
 } from "./icons";
 import {
   ShowSidebarButton,
@@ -206,6 +207,8 @@ export function ProjectPage({ id }: { id: string }) {
   const metaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMeta = useRef<Partial<Meta>>({});
   const [metaState, setMetaState] = useState<SaveState>("idle");
+  /** Text typed into a document that was replaced before it could be saved */
+  const [stranded, setStranded] = useState<string[]>([]);
 
   const setMain: SetList = useCallback(
     (fn) => setMainBlocks((p) => (p ? fn(p) : p)),
@@ -241,6 +244,13 @@ export function ProjectPage({ id }: { id: string }) {
   useEffect(() => {
     if (!serverMain || !mainRows) return;
     if (serverMain !== mainId) {
+      // The document was replaced under us (a restored version, or a full rewrite). Anything typed
+      // and not yet saved belongs to the old document and cannot be written to the new one, so it
+      // is put on screen to be copied rather than disappearing with it.
+      if (mainId) {
+        const lost = mainSync.unsaved();
+        if (lost.length) setStranded(lost.map((b) => b.content.trim()).filter(Boolean));
+      }
       mainSync.seed(serverMain, mainRows.map(fromServer), new Map(mainRows.map((r) => [r.id, r.rev])));
       // The Todo list is all checkboxes (lines written as bullets or text become to-dos; this saves)
       const list = mainRows.length ? mainRows.map(fromServer) : [emptyBlock()];
@@ -1007,6 +1017,7 @@ export function ProjectPage({ id }: { id: string }) {
         />
         {/* Above the tabs on purpose: a line someone else changed matters whichever tab you are on */}
         <ClashBar clashes={allClashes} onResolve={resolveClash} />
+        <StrandedBar lines={stranded} onClose={() => setStranded([])} />
         {/* Journal entries and the Todo list are just the writing: no tabs, no details */}
         {journal || todo ? (
           mainDoc
@@ -1310,4 +1321,43 @@ function describeTheirs(c: Clash, mine: Block | undefined) {
   if ((t.indent ?? 0) !== (mine.indent ?? 0)) diffs.push(`indented to level ${t.indent ?? 0}`);
   if ((t.type ?? "") !== (mine.type ?? "")) diffs.push(`made a ${t.type}`);
   return diffs.length ? `same words, but ${diffs.join(", ")}` : text || "(blank line)";
+}
+
+/**
+ * Words typed into a document that was replaced before they could be saved — someone restored an
+ * earlier version, or rewrote the whole thing, while this person was mid-sentence. The old document
+ * is archived by the time we hear about it, so the text cannot be written where it was going. It is
+ * shown here instead of vanishing, which is what used to happen.
+ */
+function StrandedBar({ lines, onClose }: { lines: string[]; onClose: () => void }) {
+  if (!lines.length) return null;
+  return (
+    <div role="status" className="mt-4 rounded-lg bg-(--c-b-fdf3cf) px-3.5 py-3 ring-1 ring-(--c-l-f6d5d1)">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="m-0 text-[13.5px] font-semibold text-(--c-t-7a5b00)">
+            This document was replaced while you were typing
+          </p>
+          <p className="m-0 mt-0.5 text-[12.5px] text-(--c-t-6b6b6b)">
+            {lines.length === 1 ? "This line never saved" : `These ${lines.length} lines never saved`}. Copy anything you still want, then close this.
+          </p>
+          <ul className="m-0 mt-2 list-none space-y-1 p-0">
+            {lines.map((l, i) => (
+              <li key={i} className="rounded-md bg-(--c-b-ffffff) px-2 py-1 text-[13px] text-(--c-t-1b1b1b) ring-1 ring-(--c-l-e3e3e0)">
+                {l}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Dismiss"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-(--c-t-8a8a8a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-1b1b1b)"
+        >
+          <IconX />
+        </button>
+      </div>
+    </div>
+  );
 }
