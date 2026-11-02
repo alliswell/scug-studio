@@ -5,30 +5,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { Block } from "./types";
-import { baseOf, cleanImages, contentSigOf, fromServer, mergeBlocks, type Base, type Clash, type ServerBlock } from "./docMerge";
+import { baseOf, cleanImages, contentSigOf, fromServer, mergeBlocks, planSave, toServer, type Base, type Clash, type ServerBlock } from "./docMerge";
 
 export type SaveState = "idle" | "saving" | "saved" | "error";
 
 // The merge itself is pure and lives next door, where it can be tested without React.
 // Re-exported so the components that already import these from here keep working.
-export { cleanImages, fromServer, mergeBlocks, baseOf, contentSigOf };
+export { cleanImages, fromServer, mergeBlocks, planSave, baseOf, contentSigOf, toServer };
 export type { Base, Clash, ServerBlock };
-
-export function toServer(b: Block, position: number) {
-  return {
-    key: b.id,
-    position,
-    type: b.type,
-    content: b.content,
-    checked: !!b.checked,
-    color: b.color ?? null,
-    textColor: b.textColor ?? null,
-    ...(b.type === "images" ? { images: cleanImages(b.images) } : {}),
-    sourceBlockId: b.source_block_id ?? null,
-    ...(b.indent ? { indent: b.indent } : {}),
-    ...(b.assignee ? { assignee: b.assignee as Id<"users"> } : {}),
-  };
-}
 
 export function useLoadBlocks() {
   const convex = useConvex();
@@ -62,6 +46,8 @@ export function useDocSync(docId: string | null, blocks: Block[] | null) {
   const seededFor = useRef<string | null>(null);
   /** Keys held back from saving until the person says whose version wins */
   const held = useRef(new Set<string>());
+  /** Bumped by every merge, so an in-flight save can tell its snapshot has been superseded */
+  const mergeGen = useRef(0);
 
   useEffect(() => {
     current.current = blocks;
@@ -78,29 +64,30 @@ export function useDocSync(docId: string | null, blocks: Block[] | null) {
   const flushOnce = useCallback(async () => {
     const list = current.current;
     if (!docId || !list || seededFor.current !== docId) return;
-    const upserts: (ReturnType<typeof toServer> & { baseRev?: number })[] = [];
-    const sent = new Map<string, Base>();
-    list.forEach((b, i) => {
-      if (held.current.has(b.id)) return;
-      const was = base.current.get(b.id);
-      const csig = contentSigOf(b);
-      if (was && was.csig === csig && was.pos === i) return;
-      upserts.push({ ...toServer(b, i), ...(was ? { baseRev: was.rev } : {}) });
-      sent.set(b.id, { csig, pos: i, rev: was?.rev ?? 0 });
-    });
-    const keys = new Set(list.map((b) => b.id));
-    const deletes = [...base.current.entries()]
-      .filter(([k]) => !keys.has(k) && !held.current.has(k))
-      .map(([key, was]) => ({ key, baseRev: was.rev }));
-    if (!upserts.length && !deletes.length) return;
+    const { upserts, moves, deletes, sent } = planSave(list, base.current, held.current);
+    if (!upserts.length && !moves.length && !deletes.length) return;
     setState("saving");
-    const res = (await syncMutation({ documentId: docId as Id<"documents">, upserts, deletes })) as {
+    // Noted before the await: a merge may land while this is in flight, and its decisions are
+    // newer than the snapshot we are about to be acknowledged for.
+    const gen = mergeGen.current;
+    const res = (await syncMutation({ documentId: docId as Id<"documents">, upserts, moves, deletes })) as {
       applied: { key: string; rev: number }[];
       clashes: Clash[];
     };
     for (const { key, rev } of res.applied) {
       const s = sent.get(key);
-      if (s) base.current.set(key, { ...s, rev });
+      if (!s) continue;
+      const now = base.current.get(key);
+      // A merge took this line while we were in flight: keep what it decided and take only the rev,
+      // or we would quietly revert the other person on the strength of a pre-flight snapshot.
+      if (mergeGen.current !== gen && now && now.csig !== s.csig) base.current.set(key, { ...now, rev });
+      else base.current.set(key, { ...s, rev });
+    }
+    // Only once the server has them: a failed save must leave the moves queued, or the document
+    // keeps a position nobody ever wrote.
+    for (const m of moves) {
+      const was = base.current.get(m.key);
+      if (was) base.current.set(m.key, { ...was, pos: m.position });
     }
     const clashed = new Set(res.clashes.map((c) => c.key));
     // A delete the server accepted is gone for good; one it refused stays known, so the line their
@@ -148,30 +135,53 @@ export function useDocSync(docId: string | null, blocks: Block[] | null) {
       // Always taken, even when the document itself is unchanged: the merge may still have moved
       // our record of a line's rev on, and losing that would clash us over nothing later.
       base.current = merged.base;
+      mergeGen.current++;
       return merged.changed ? merged.blocks : null;
     },
     [docId],
   );
 
   /**
-   * Settle a clash. "theirs" swaps their line in; "mine" keeps yours and writes it over theirs on
-   * the next save. Either way the line starts saving again.
+   * Settle a clash, and say what the document should now do about it.
+   *
+   * `block` is the line to put back on screen, `at` where to put it if it is not there any more
+   * (choosing their version of a delete you asked for means restoring their line), and `removed`
+   * that the line should go.
    */
-  const resolve = useCallback((key: string, winner: "mine" | "theirs"): Block | null => {
-    const clash = clashes.find((c) => c.key === key);
-    held.current.delete(key);
-    setClashes((prev) => prev.filter((c) => c.key !== key));
-    if (!clash) return null;
-    const was = base.current.get(key);
-    // Either way we are now up to date with their rev, so our next write lands on top of it
-    // instead of clashing again.
-    if (clash.theirs) base.current.set(key, { csig: contentSigOf(fromServer(clash.theirs)), pos: was?.pos ?? 0, rev: clash.theirs.rev });
-    else base.current.delete(key);
-    if (winner === "theirs") return clash.theirs ? fromServer(clash.theirs) : null;
-    // Keeping ours: mark the line dirty against their rev so the next flush sends it.
-    if (was) base.current.set(key, { csig: "", pos: was.pos, rev: clash.theirs?.rev ?? was.rev });
-    return null;
-  }, [clashes]);
+  const resolve = useCallback(
+    (key: string, winner: "mine" | "theirs"): { block: Block | null; at: number; removed: boolean } => {
+      const clash = clashes.find((c) => c.key === key);
+      held.current.delete(key);
+      setClashes((prev) => prev.filter((c) => c.key !== key));
+      const was = base.current.get(key);
+      const at = was?.pos ?? 0;
+      if (!clash) return { block: null, at, removed: false };
+
+      if (winner === "theirs") {
+        if (!clash.theirs) {
+          // They removed the line and we agree: forget it entirely, so no later save re-creates it.
+          base.current.delete(key);
+          return { block: null, at, removed: true };
+        }
+        base.current.set(key, { csig: contentSigOf(fromServer(clash.theirs)), pos: at, rev: clash.theirs.rev });
+        return { block: fromServer(clash.theirs), at, removed: false };
+      }
+
+      // Keeping ours.
+      if (!clash.theirs) {
+        // They removed the line; we want it back. It must go up as a NEW line, with no claim to
+        // have read a row that no longer exists — claiming one got refused again on every save,
+        // forever, and the words only ever lived in the tab until it was closed.
+        base.current.delete(key);
+        return { block: null, at, removed: false };
+      }
+      // Their row is still there: mark ours dirty against the rev we have now been shown, so the
+      // next save lands on top of it rather than clashing again.
+      base.current.set(key, { csig: "", pos: at, rev: clash.theirs.rev });
+      return { block: null, at, removed: false };
+    },
+    [clashes],
+  );
 
   useEffect(() => {
     if (!blocks || !docId) return;

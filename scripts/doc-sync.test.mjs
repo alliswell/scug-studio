@@ -4,7 +4,7 @@
 // cannot be exercised by running the app here, so it is tested directly. Run: npm run test:sync
 import assert from "node:assert/strict";
 import test from "node:test";
-import { baseOf, mergeBlocks } from "../src/lib/docMerge.ts";
+import { baseOf, mergeBlocks, planSave } from "../src/lib/docMerge.ts";
 
 /** A line as the editor holds it. */
 const line = (id, content, extra = {}) => ({ id, type: "p", content, checked: false, color: null, source_block_id: null, ...extra });
@@ -100,12 +100,55 @@ test("a held line is not deleted out from under the person either", () => {
   assert.deepEqual(blocks.map((b) => b.id), ["a", "b"]);
 });
 
-test("moving a line is not an edit: reordering alone merges to nothing", () => {
-  // Adding one line at the top renumbers every line below it. None of those may read as a change,
-  // or a second person in the document would clash on the whole file.
+test("a reorder they made arrives, rather than being silently dragged back", () => {
+  // The merge used to emit strictly local order, so their drag never showed up — and the next
+  // time this person pressed Enter, their stale order was written back over it.
+  const { local, base } = loaded([row("a", "one", 1), row("b", "two", 1), row("c", "three", 1)]);
+  const { blocks, changed } = mergeBlocks(local, base, [row("c", "three", 1), row("a", "one", 1), row("b", "two", 1)]);
+  assert.equal(changed, true);
+  assert.deepEqual(blocks.map((b) => b.id), ["c", "a", "b"]);
+});
+
+test("a reorder WE made wins over theirs, and loses no words either way", () => {
+  const { base } = loaded([row("a", "one", 1), row("b", "two", 1), row("c", "three", 1)]);
+  const local = [line("c", "three"), line("a", "one"), line("b", "two")]; // we dragged c to the top
+  const { blocks } = mergeBlocks(local, base, [row("b", "two", 1), row("a", "one", 1), row("c", "three", 1)]);
+  assert.deepEqual(blocks.map((b) => b.id), ["c", "a", "b"], "our own drag is not undone by theirs");
+});
+
+test("moving a line is not an EDIT: same words in a new order never clash", () => {
+  // Adding one line at the top renumbers every line below it. None of those may read as a change
+  // to its words, or a second person in the document would clash on the whole file.
   const { local, base } = loaded([row("a", "one", 1), row("b", "two", 1)]);
-  const { changed } = mergeBlocks(local, base, [row("b", "two", 1), row("a", "one", 1)]);
-  assert.equal(changed, false, "same words, different order, same revs — nothing to apply");
+  const { blocks } = mergeBlocks(local, base, [row("b", "two", 1), row("a", "one", 1)]);
+  assert.deepEqual(blocks.map((b) => b.content).sort(), ["one", "two"], "every word survives a reorder");
+});
+
+test("a line they added lands next to the line it follows, not at its raw index", () => {
+  // Our list is offset by a line we have typed and not yet saved. Splicing at the server's index
+  // would drop their sentence into the wrong paragraph — and our next save would write that back.
+  const { base } = loaded([row("a", "1. venue", 1), row("b", "2. catering", 1), row("c", "3. invites", 1)]);
+  const local = [line("title", "Checklist"), line("a", "1. venue"), line("b", "2. catering"), line("c", "3. invites")];
+  const server = [row("a", "1. venue", 1), row("b", "2. catering", 1), row("x", "2b. head count", 1), row("c", "3. invites", 1)];
+  const { blocks } = mergeBlocks(local, base, server);
+  assert.deepEqual(blocks.map((b) => b.id), ["title", "a", "b", "x", "c"], "their line follows the one it followed on the server");
+});
+
+test("a line they added after one we deleted still lands in the right place", () => {
+  const { base } = loaded([row("a", "one", 1), row("b", "two", 1), row("c", "three", 1)]);
+  const local = [line("b", "two"), line("c", "three")]; // we deleted a; not flushed yet
+  const server = [row("a", "one", 1), row("b", "two", 1), row("x", "two and a half", 1), row("c", "three", 1)];
+  const { blocks } = mergeBlocks(local, base, server);
+  assert.deepEqual(blocks.map((b) => b.id), ["b", "x", "c"]);
+});
+
+test("a held line's rev stays pinned to the words it holds", () => {
+  // Letting it drift to the server's latest is what made "keep mine" land silently on top of an
+  // edit the person was never shown.
+  const { base } = loaded([row("a", "one", 1)]);
+  const local = [line("a", "one")]; // unchanged locally, but held from an earlier clash
+  const merged = mergeBlocks(local, base, [row("a", "they moved on", 9)], new Set(["a"]));
+  assert.equal(merged.base.get("a").rev, 1, "a held line must not quietly adopt a rev it has not seen");
 });
 
 test("taking their line brings its rev along, so our next save lands on top instead of clashing", () => {
@@ -154,4 +197,57 @@ test("checking a box counts as a change; moving the line it is on does not", () 
   const ticked = mergeBlocks(local, base, [row("a", "task", 2, { type: "todo", checked: true })]);
   assert.equal(ticked.changed, true);
   assert.equal(ticked.blocks[0].checked, true);
+});
+
+
+// ---------------------------------------------------------------------------
+// What the editor sends. The split between a content write and a plain move is the difference
+// between "someone else is editing this line" and "someone typed above it".
+// ---------------------------------------------------------------------------
+
+test("THE BUG: typing one line at the top sends the rest as MOVES, not as guarded writes", () => {
+  // Sending them as guarded writes made every line anyone else was editing come back as a false
+  // clash, and "keep mine" then wrote this person's stale copy over the other person's words.
+  const { local, base } = loaded([row("a", "one", 1), row("b", "two", 1), row("c", "three", 1)]);
+  const withHeading = [line("new", "Heading"), ...local];
+  const plan = planSave(withHeading, base);
+  assert.deepEqual(plan.moves.map((m) => m.key), ["a", "b", "c"], "the shifted lines go as moves");
+  assert.deepEqual(plan.upserts.map((u) => u.key), ["new"], "only the line actually typed is a write");
+  assert.equal(plan.upserts[0].baseRev, undefined, "a brand new line claims to have read nothing");
+  assert.equal(plan.deletes.length, 0);
+  for (const m of plan.moves) assert.equal("baseRev" in m, false, "a move must carry no rev guard at all");
+});
+
+test("changing a line's words sends a guarded write, carrying the rev we read", () => {
+  const { base } = loaded([row("a", "one", 1), row("b", "two", 4)]);
+  const plan = planSave([line("a", "one"), line("b", "two, rewritten")], base);
+  assert.equal(plan.moves.length, 0);
+  assert.deepEqual(plan.upserts.map((u) => [u.key, u.baseRev]), [["b", 4]]);
+});
+
+test("a line that both moved and changed is a guarded write, not a move", () => {
+  const { base } = loaded([row("a", "one", 1), row("b", "two", 1)]);
+  const plan = planSave([line("b", "two, rewritten"), line("a", "one")], base);
+  assert.deepEqual(plan.upserts.map((u) => [u.key, u.baseRev, u.position]), [["b", 1, 0]]);
+  assert.deepEqual(plan.moves.map((m) => [m.key, m.position]), [["a", 1]]);
+});
+
+test("a removed line is deleted against the rev we read, so their edit to it is not wiped", () => {
+  const { base } = loaded([row("a", "one", 1), row("b", "two", 7)]);
+  const plan = planSave([line("a", "one")], base);
+  assert.deepEqual(plan.deletes, [{ key: "b", baseRev: 7 }]);
+});
+
+test("a line held in a clash is sent nowhere at all, not even as a move", () => {
+  const { base } = loaded([row("a", "one", 1), row("b", "two", 1)]);
+  const plan = planSave([line("x", "new"), line("a", "one changed"), line("b", "two")], base, new Set(["a", "b"]));
+  assert.deepEqual(plan.upserts.map((u) => u.key), ["x"]);
+  assert.equal(plan.moves.length, 0);
+  assert.equal(plan.deletes.length, 0);
+});
+
+test("a quiet document sends nothing", () => {
+  const { local, base } = loaded([row("a", "one", 1), row("b", "two", 1)]);
+  const plan = planSave(local, base);
+  assert.equal(plan.upserts.length + plan.moves.length + plan.deletes.length, 0);
 });

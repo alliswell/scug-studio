@@ -24,10 +24,15 @@ export type ServerBlock = {
   rev: number;
 };
 
-/** A line we and someone else both changed. Ours is kept; theirs is here so nothing is lost. */
+/**
+ * A line we and someone else both changed. Ours is kept; theirs is here so nothing is lost.
+ *   changed  we edited it, they had edited it first
+ *   removed  we edited it, they had deleted it
+ *   kept     we deleted it, they had just edited it — so their row is still there
+ */
 export type Clash = {
   key: string;
-  reason: "changed" | "removed";
+  reason: "changed" | "removed" | "kept";
   /** Their version, or null when they removed the line */
   theirs: ServerBlock | null;
 };
@@ -90,6 +95,7 @@ export function mergeBlocks(
   held: Set<string> = new Set(),
 ): { blocks: Block[]; base: Map<string, Base>; changed: boolean } {
   const theirs = new Map(server.map((b) => [b.id, b]));
+  const serverAt = new Map(server.map((b, i) => [b.id, i]));
   const mine = new Set(local.map((b) => b.id));
   const next = new Map(base);
   const out: Block[] = [];
@@ -127,24 +133,119 @@ export function mergeBlocks(
       changed = true;
     } else {
       out.push(l);
-      if (!mineChanged && s.rev !== was.rev) {
+      // A held line's base stays pinned to the rev whose words it actually holds. Letting it drift
+      // to the server's latest would make "keep mine" land silently on top of an edit the person
+      // was never shown.
+      if (!mineChanged && !held.has(l.id) && s.rev !== was.rev) {
         next.set(l.id, { ...was, rev: s.rev });
         baseTouched = true;
       }
     }
   }
-  // Lines they added that we have never seen, dropped in where they sit on the server. A key we
-  // still hold a base for but have no line for is one WE deleted: leave it deleted.
+
+  // Lines they added that we have never seen. Anchored to the line they follow on the server, NOT
+  // to their server index: our list is offset by every line we have typed or deleted and not yet
+  // saved, so an index would drop their sentence into the wrong paragraph — and our next save
+  // would then write that wrong order back for everyone.
   server.forEach((s, i) => {
     if (mine.has(s.id) || base.has(s.id)) return;
-    out.splice(Math.min(i, out.length), 0, fromServer(s));
+    let at = 0;
+    for (let j = i - 1; j >= 0; j--) {
+      const k = out.findIndex((b) => b.id === server[j].id);
+      if (k >= 0) {
+        at = k + 1;
+        break;
+      }
+    }
+    out.splice(at, 0, fromServer(s));
     took.set(s.id, s.rev);
     changed = true;
   });
+
+  // Reordering. A line we have not moved ourselves should sit where the server has it, or one
+  // person's drag is silently dragged back by the next person who presses Enter above it. If we
+  // HAVE reordered, ours wins and nothing is lost — a move loses no words either way.
+  const sharedAt: number[] = [];
+  const shared: Block[] = [];
+  out.forEach((b, i) => {
+    if (theirs.has(b.id) && base.has(b.id)) {
+      sharedAt.push(i);
+      shared.push(b);
+    }
+  });
+  const byBasePos = [...shared].sort((a, b) => (base.get(a.id)?.pos ?? 0) - (base.get(b.id)?.pos ?? 0));
+  const weReordered = shared.some((b, i) => b.id !== byBasePos[i].id);
+  if (!weReordered) {
+    const wanted = [...shared].sort((a, b) => (serverAt.get(a.id) ?? 0) - (serverAt.get(b.id) ?? 0));
+    if (wanted.some((b, i) => b.id !== shared[i].id)) {
+      sharedAt.forEach((slot, i) => {
+        out[slot] = wanted[i];
+      });
+      changed = true;
+    }
+  }
+
   if (!changed) return { blocks: local, base: baseTouched ? next : base, changed: false };
   out.forEach((b, i) => {
     const rev = took.get(b.id);
     if (rev !== undefined) next.set(b.id, baseOf(b, i, rev));
   });
   return { blocks: out, base: next, changed: true };
+}
+
+export function toServer(b: Block, position: number) {
+  return {
+    key: b.id,
+    position,
+    type: b.type,
+    content: b.content,
+    checked: !!b.checked,
+    color: b.color ?? null,
+    textColor: b.textColor ?? null,
+    ...(b.type === "images" ? { images: cleanImages(b.images) } : {}),
+    sourceBlockId: b.source_block_id ?? null,
+    ...(b.indent ? { indent: b.indent } : {}),
+    ...(b.assignee ? { assignee: b.assignee as Id<"users"> } : {}),
+  };
+}
+
+export type SavePlan = {
+  upserts: (ReturnType<typeof toServer> & { baseRev?: number })[];
+  moves: { key: string; position: number }[];
+  deletes: { key: string; baseRev: number }[];
+  /** What each upserted line will have been, once the server acknowledges it */
+  sent: Map<string, Base>;
+};
+
+/**
+ * Works out what to send: which lines changed, which only moved, which went.
+ *
+ * The split between `upserts` and `moves` is the load-bearing part. A line whose words are
+ * untouched and which has only shifted — because somebody typed above it — goes as a MOVE, with
+ * no rev guard. Sending it as a guarded write instead is what turned one keystroke at the top of
+ * a document into a clash on every line anyone else was editing, whose "keep mine" then wrote
+ * stale text over their words. Position is last-writer-wins; words are never.
+ *
+ * Pure, so the rule above is pinned by a test rather than by hope.
+ */
+export function planSave(local: Block[], base: Map<string, Base>, held: Set<string> = new Set()): SavePlan {
+  const upserts: SavePlan["upserts"] = [];
+  const moves: SavePlan["moves"] = [];
+  const sent = new Map<string, Base>();
+  local.forEach((b, i) => {
+    if (held.has(b.id)) return;
+    const was = base.get(b.id);
+    const csig = contentSigOf(b);
+    if (was && was.csig === csig) {
+      if (was.pos !== i) moves.push({ key: b.id, position: i });
+      return;
+    }
+    upserts.push({ ...toServer(b, i), ...(was ? { baseRev: was.rev } : {}) });
+    sent.set(b.id, { csig, pos: i, rev: was?.rev ?? 0 });
+  });
+  const keys = new Set(local.map((b) => b.id));
+  const deletes = [...base.entries()]
+    .filter(([k]) => !keys.has(k) && !held.has(k))
+    .map(([key, was]) => ({ key, baseRev: was.rev }));
+  return { upserts, moves, deletes, sent };
 }

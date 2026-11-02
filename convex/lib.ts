@@ -83,8 +83,21 @@ export function commentsOf(b: Pick<Doc<"blocks">, "attachments" | "comments" | "
   return [...legacy, ...(b.comments ?? [])];
 }
 
-export function filesOf(b: Pick<Doc<"blocks">, "attachments" | "comments">): Id<"_storage">[] {
+/** The pictures in an images block. The editor sends these, so it is the one set a save may free. */
+export function imagesOf(b: Pick<Doc<"blocks">, "images">): Id<"_storage">[] {
   const out: Id<"_storage">[] = [];
+  for (const a of b.images ?? []) if (a.storageId) out.push(a.storageId);
+  return out;
+}
+
+/**
+ * Every stored file a block holds. Pictures are in here too: leave them out and a picture that is
+ * replaced or deleted keeps its blob forever. Because releaseFiles re-scans every block through
+ * this same function before deleting anything, both halves have to move together — counting
+ * pictures on only one side would start deleting ones that are still on screen.
+ */
+export function filesOf(b: Pick<Doc<"blocks">, "attachments" | "comments" | "images">): Id<"_storage">[] {
+  const out: Id<"_storage">[] = imagesOf(b);
   for (const a of b.attachments ?? []) if (a.storageId) out.push(a.storageId);
   for (const c of b.comments ?? []) for (const a of c.attachments) if (a.storageId) out.push(a.storageId);
   return out;

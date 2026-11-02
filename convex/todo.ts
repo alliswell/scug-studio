@@ -109,7 +109,7 @@ export const add = mutation({
       .collect();
     // A fresh list is one empty bullet: fill it in rather than adding below it
     const lone = blocks.length === 1 && !blocks[0].content.trim() ? blocks[0] : null;
-    if (lone) await ctx.db.patch(lone._id, { content: t, type: "todo" });
+    if (lone) await ctx.db.patch(lone._id, { content: t, type: "todo", rev: (lone.rev ?? 0) + 1 });
     else {
       const position = blocks.reduce((m, b) => Math.max(m, b.position), -1) + 1;
       await ctx.db.insert("blocks", { documentId: main._id, projectId, key: crypto.randomUUID(), position, type: "todo", content: t, checked: false, color: null, sourceBlockId: null });

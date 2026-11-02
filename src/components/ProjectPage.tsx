@@ -565,15 +565,22 @@ export function ProjectPage({ id }: { id: string }) {
   // Lines this person and somebody else both changed. Ours stayed in the document and theirs was
   // refused by the server, so the words still exist on both sides and the choice is made here.
   const allClashes = [
-    ...mainSync.clashes.map((c) => ({ c, where: "main" as const })),
-    ...tasksSync.clashes.map((c) => ({ c, where: "tasks" as const })),
+    ...mainSync.clashes.map((c) => ({ c, where: "main" as const, mine: mainBlocks.find((b) => b.id === c.key) })),
+    ...tasksSync.clashes.map((c) => ({ c, where: "tasks" as const, mine: taskBlocks.find((b) => b.id === c.key) })),
   ];
   const resolveClash = (key: string, where: "main" | "tasks", winner: "mine" | "theirs") => {
     const sync = where === "main" ? mainSync : tasksSync;
     const set = where === "main" ? setMainBlocks : setTaskBlocks;
-    const theirs = sync.resolve(key, winner);
-    if (winner !== "theirs") return;
-    set((prev) => (!prev ? prev : theirs ? prev.map((b) => (b.id === key ? theirs : b)) : prev.filter((b) => b.id !== key)));
+    const { block, at, removed } = sync.resolve(key, winner);
+    set((prev) => {
+      if (!prev) return prev;
+      if (removed) return prev.filter((b) => b.id !== key);
+      if (!block) return prev;
+      if (prev.some((b) => b.id === key)) return prev.map((b) => (b.id === key ? block : b));
+      // Their line was never on our screen: we had deleted it, and choosing theirs puts it back.
+      const i = Math.min(at, prev.length);
+      return [...prev.slice(0, i), block, ...prev.slice(i)];
+    });
   };
 
   const states = [mainSync.state, tasksSync.state, metaState];
@@ -1242,14 +1249,17 @@ function PresentIcon() {
  *
  * Theirs never landed on top of yours — the server refused the write — so both versions still
  * exist and this is where you pick. It sits above the tabs because a line going stale matters
- * whichever tab you happen to be on. The wording carries the meaning on its own; the colour only
- * repeats it.
+ * whichever tab you happen to be on, and it says plainly that the line has STOPPED SAVING, which
+ * is the part that costs you work if you carry on typing into it and never read this.
+ *
+ * It also says what actually differs. When two people edit the wording and the tick of the same
+ * to-do, the two versions read identically, and "keep mine" would silently untick it.
  */
 function ClashBar({
   clashes,
   onResolve,
 }: {
-  clashes: { c: Clash; where: "main" | "tasks" }[];
+  clashes: { c: Clash; where: "main" | "tasks"; mine: Block | undefined }[];
   onResolve: (key: string, where: "main" | "tasks", winner: "mine" | "theirs") => void;
 }) {
   if (!clashes.length) return null;
@@ -1258,34 +1268,46 @@ function ClashBar({
   return (
     <div role="status" className="mt-4 rounded-lg bg-(--c-b-fef6f5) px-3.5 py-3 ring-1 ring-(--c-l-f6d5d1)">
       <p className="m-0 text-[13.5px] font-semibold text-(--c-t-b42318)">
-        {clashes.length === 1 ? "Someone else changed a line you were editing" : `Someone else changed ${clashes.length} lines you were editing`}
+        {clashes.length === 1 ? "A line stopped saving: someone else changed it too" : `${clashes.length} lines stopped saving: someone else changed them too`}
       </p>
       <p className="m-0 mt-0.5 text-[12.5px] text-(--c-t-6b6b6b)">
-        Yours is what you see in the document. Nothing was overwritten — pick which version to keep.
+        Nothing was overwritten, and what you see is still yours — but {clashes.length === 1 ? "this line will not save" : "these lines will not save"} until you pick.
       </p>
       <ul className="m-0 mt-2.5 list-none space-y-1.5 p-0">
-        {clashes.map(({ c, where }) => (
+        {clashes.map(({ c, where, mine }) => (
           <li key={`${where}:${c.key}`} className="flex flex-wrap items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-[13px] text-(--c-t-4a4a4a)">
-              {c.theirs ? (
-                <>
-                  <span className="text-(--c-t-8a8a8a)">Theirs: </span>
-                  {c.theirs.content.trim() || "(blank line)"}
-                </>
-              ) : (
-                "They deleted this line"
-              )}
+              <span className="text-(--c-t-8a8a8a)">{c.reason === "kept" ? "You deleted this; theirs: " : c.reason === "removed" ? "" : "Theirs: "}</span>
+              {c.reason === "removed" ? "They deleted this line" : describeTheirs(c, mine)}
               {where === "tasks" && <span className="text-(--c-t-8a8a8a)"> · on the task list</span>}
             </span>
             <button type="button" className={btn} onClick={() => onResolve(c.key, where, "theirs")}>
-              {c.theirs ? "Use theirs" : "Delete it"}
+              {c.reason === "removed" ? "Delete it" : c.reason === "kept" ? "Put theirs back" : "Use theirs"}
             </button>
             <button type="button" className={btn} onClick={() => onResolve(c.key, where, "mine")}>
-              Keep mine
+              {c.reason === "kept" ? "Delete it anyway" : "Keep mine"}
             </button>
           </li>
         ))}
       </ul>
     </div>
   );
+}
+
+/**
+ * Their version, in a way that shows the difference. If the words match, the clash is about
+ * something invisible in a line of text — a tick, an assignee, an indent — and saying only the
+ * text would invite the person to discard exactly the thing they cannot see.
+ */
+function describeTheirs(c: Clash, mine: Block | undefined) {
+  const t = c.theirs;
+  if (!t) return "(gone)";
+  const text = t.content.trim();
+  if (!mine || text !== mine.content.trim()) return text || "(blank line)";
+  const diffs: string[] = [];
+  if (!!t.checked !== !!mine.checked) diffs.push(t.checked ? "ticked" : "unticked");
+  if ((t.assignee ?? null) !== (mine.assignee ?? null)) diffs.push(t.assignee ? "assigned to someone" : "unassigned");
+  if ((t.indent ?? 0) !== (mine.indent ?? 0)) diffs.push(`indented to level ${t.indent ?? 0}`);
+  if ((t.type ?? "") !== (mine.type ?? "")) diffs.push(`made a ${t.type}`);
+  return diffs.length ? `same words, but ${diffs.join(", ")}` : text || "(blank line)";
 }
