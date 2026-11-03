@@ -18,6 +18,7 @@ import { BoardsList } from "@/components/BoardsList";
 import { ScratchboardList } from "@/components/ScratchboardList";
 import { PdfList } from "@/components/PdfList";
 import { Reviews } from "@/components/Reviews";
+import { FfeLibrary } from "@/components/FfeLibrary";
 import { ClubsList } from "@/components/ClubsList";
 import { HomeDashboard } from "@/components/HomeDashboard";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -53,7 +54,7 @@ const TITLES = Object.fromEntries(VIEWS.map((v) => [v.view, v.title])) as Record
 /** Views that fill the page themselves */
 const BARE: View[] = ["home", "journal"];
 /** Views that sit in the padded app container, with nothing but the sidebar button above them */
-const PANELS: View[] = ["clubs", "reviews", "mymind", "library", "boards", "scratchboards", "pdfs"];
+const PANELS: View[] = ["clubs", "reviews", "ffe", "mymind", "library", "boards", "scratchboards", "pdfs"];
 
 /** "Sep 12", with the year only when it isn't this year. */
 function shortDate(d: string | null) {
@@ -402,6 +403,7 @@ function ProjectList() {
     journal: <JournalList />,
     clubs: <ClubsList />,
     reviews: <Reviews />,
+    ffe: <FfeLibrary />,
     mymind: <Mymind />,
     library: <Library />,
     boards: <BoardsList />,

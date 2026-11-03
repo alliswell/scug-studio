@@ -28,6 +28,12 @@ async function projectsOf(ctx: QueryCtx, clubId: Id<"clubs">) {
     .collect();
 }
 
+const placementsOf = (ctx: QueryCtx, clubId: Id<"clubs">) =>
+  ctx.db
+    .query("ffePlacements")
+    .withIndex("by_club", (q) => q.eq("clubId", clubId))
+    .collect();
+
 /** Hand-ordered first, in the order someone dragged them; everything else after, by name. */
 const byOrderThenName = (a: Doc<"clubs">, b: Doc<"clubs">) => {
   const ao = a.order ?? Number.POSITIVE_INFINITY;
@@ -226,6 +232,9 @@ export const reorder = mutation({
 /**
  * Deleting a club with work on it would leave those projects pointing at nothing, and a project
  * quietly detached from its location is worse than a refused delete. Move them first.
+ *
+ * Its FF&E is the same argument: the club owns what is in it, so the furniture has to be dealt
+ * with by hand rather than vanishing with the row.
  */
 export const remove = mutation({
   args: { id: v.id("clubs") },
@@ -238,6 +247,15 @@ export const remove = mutation({
       const names = projects.slice(0, 5).map((p) => p.title || "Untitled");
       const more = projects.length > names.length ? `, and ${projects.length - names.length} more` : "";
       throw new ConvexError(`${club.name} still has ${projects.length} project${projects.length === 1 ? "" : "s"}: ${names.join(", ")}${more}. Move or delete them first.`);
+    }
+    const placements = await placementsOf(ctx, id);
+    if (placements.length) {
+      const products = [...new Set(await Promise.all(placements.map(async (p) => (await ctx.db.get(p.productId))?.name ?? "a product")))].sort();
+      const shown = products.slice(0, 5);
+      const more = products.length > shown.length ? `, and ${products.length - shown.length} more` : "";
+      throw new ConvexError(
+        `${club.name} still has ${placements.length} FF&E placement${placements.length === 1 ? "" : "s"}: ${shown.join(", ")}${more}. Remove them first.`,
+      );
     }
     if (club.coverStorageId) await ctx.storage.delete(club.coverStorageId).catch(() => {});
     await ctx.db.delete(id);

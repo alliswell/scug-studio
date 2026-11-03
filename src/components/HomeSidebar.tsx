@@ -22,6 +22,7 @@ export type View =
   | "feed"
   | "clubs"
   | "reviews"
+  | "ffe"
   | "mymind"
   | "library"
   | "boards"
@@ -42,6 +43,7 @@ export const VIEWS: { view: View; title: string }[] = [
   { view: "feed", title: "Feed" },
   { view: "clubs", title: "Clubs" },
   { view: "reviews", title: "Reviews" },
+  { view: "ffe", title: "FF&E" },
   { view: "mymind", title: "References" },
   { view: "library", title: "Library" },
   { view: "boards", title: "Excalidraw" },
@@ -866,6 +868,16 @@ function JournalIcon() {
   );
 }
 
+/** A chair, front on: the furniture itself */
+function FfeIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4.25" y="2.25" width="7.5" height="5.5" rx="1.5" />
+      <path d="M2.75 7.75h10.5M4.75 7.75v5.5M11.25 7.75v5.5" />
+    </svg>
+  );
+}
+
 function ScratchIcon() {
   return (
     <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -877,6 +889,7 @@ function ScratchIcon() {
 
 /** Every app; each person pins the ones they want in their sidebar */
 const APPS: { view: View; label: string; icon: ReactNode }[] = [
+  { view: "ffe", label: "FF&E", icon: <FfeIcon /> },
   { view: "mymind", label: "References", icon: <MindIcon /> },
   { view: "library", label: "Library", icon: <LibraryIcon /> },
   { view: "boards", label: "Excalidraw", icon: <DrawIcon /> },

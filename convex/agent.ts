@@ -70,7 +70,7 @@ const site = () => process.env.SITE_URL ?? "";
 const shareUrl = (slug: string) => `${site()}/s/${slug}`;
 const projectUrl = (id: Id<"projects">) => `${site()}/p/${id}`;
 
-async function resolveProject(ctx: QueryCtx, project: string) {
+export async function resolveProject(ctx: QueryCtx, project: string) {
   const id = ctx.db.normalizeId("projects", project);
   const row = id
     ? await ctx.db.get(id)
@@ -1000,6 +1000,27 @@ export const httpGetClub = route((ctx, _b, url) => {
 });
 export const httpCreateClub = route((ctx, b) => ctx.runMutation(internal.clubs.createForAgent, b as any));
 export const httpUpdateClub = route((ctx, b) => ctx.runMutation(internal.clubs.updateForAgent, b as any));
+export const httpListFfeProducts = route((ctx, _b, url) =>
+  ctx.runQuery(internal.ffe.listProductsForAgent, {
+    search: url.searchParams.get("q") ?? undefined,
+    category: url.searchParams.get("category") ?? undefined,
+  }),
+);
+export const httpGetFfeProduct = route((ctx, _b, url) => {
+  const product = url.searchParams.get("product");
+  if (!product) throw new ConvexError("Pass ?product=<id or name>");
+  return ctx.runQuery(internal.ffe.getProductForAgent, { product });
+});
+export const httpAddFfeProduct = route((ctx, b) => ctx.runMutation(internal.ffe.createProductForAgent, b as any));
+export const httpUpdateFfeProduct = route((ctx, b) => ctx.runMutation(internal.ffe.updateProductForAgent, b as any));
+export const httpPlaceFfe = route((ctx, b) => ctx.runMutation(internal.ffe.placeForAgent, b as any));
+export const httpListFfe = route((ctx, _b, url) =>
+  ctx.runQuery(internal.ffe.listPlacementsForAgent, {
+    club: url.searchParams.get("club") ?? undefined,
+    project: url.searchParams.get("project") ?? undefined,
+  }),
+);
+export const httpRemoveFfePlacement = route((ctx, b) => ctx.runMutation(internal.ffe.removePlacementForAgent, b as any));
 export const httpListBoards = route((ctx, _b, url) => ctx.runQuery(internal.boards.listForAgent, { query: url.searchParams.get("q") ?? undefined }));
 export const httpGetBoard = route((ctx, _b, url) => {
   const board = url.searchParams.get("board");

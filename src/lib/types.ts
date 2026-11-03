@@ -218,6 +218,32 @@ export const MARK_KINDS: { value: MarkKind; label: string; glyph: string; hex: s
 
 export const markKindOf = (k: string | null | undefined) => MARK_KINDS.find((x) => x.value === k) ?? MARK_KINDS[2];
 
+// ---------------------------------------------------------------------------
+// FF&E
+// ---------------------------------------------------------------------------
+
+export type FfeCategory = "seating" | "tables" | "lighting" | "soft" | "storage" | "fixtures" | "equipment" | "art";
+
+/**
+ * Each category carries a glyph as well as a colour, like every other coded thing here. A furniture
+ * schedule is exactly the kind of dense list where colour alone stops carrying anything.
+ */
+export const FFE_CATEGORIES: { value: FfeCategory; label: string; glyph: string; hex: string; colorName: string }[] = [
+  { value: "seating", label: "Seating", glyph: "◖", hex: "#3B6FD9", colorName: "Blue" },
+  { value: "tables", label: "Tables", glyph: "▭", hex: "#0F9488", colorName: "Teal" },
+  { value: "lighting", label: "Lighting", glyph: "◌", hex: "#C47F00", colorName: "Amber" },
+  { value: "soft", label: "Soft goods", glyph: "◠", hex: "#D6336C", colorName: "Rose" },
+  { value: "storage", label: "Storage", glyph: "▤", hex: "#9A6B3F", colorName: "Brown" },
+  { value: "fixtures", label: "Fixtures", glyph: "◈", hex: "#5C5FD6", colorName: "Indigo" },
+  { value: "equipment", label: "Equipment", glyph: "⊞", hex: "#6B7280", colorName: "Slate" },
+  { value: "art", label: "Art", glyph: "◇", hex: "#2F9E44", colorName: "Green" },
+];
+
+export const ffeCategoryOf = (c: string | null | undefined) => FFE_CATEGORIES.find((x) => x.value === c) ?? null;
+
+/** "Hay · About A Chair AAC22" — the maker is part of how a product is known. */
+export const productLabel = (p: { name: string; maker?: string | null }) => (p.maker?.trim() ? `${p.maker.trim()} · ${p.name}` : p.name);
+
 /** What a review round will accept as a sheet. */
 export const REVIEW_FILE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,image/heic,image/heif,image/avif,image/svg+xml,application/pdf";
 

@@ -44,6 +44,12 @@ const PAGES: { view: View; title: string; words: string; icon: ReactNode }[] = [
   { view: "feed", title: "Feed", words: "updates urgent site visits vendor calls", icon: svg(<path d="M3 4h10M3 8h10M3 12h10" />) },
   { view: "clubs", title: "Clubs", words: "locations neighborhoods spaces network", icon: svg(<><path d="M2.25 6.25h11.5v7.5H2.25z" /><path d="M1.75 6.25 3.5 2.75h9l1.75 3.5M6.5 13.75v-4h3v4" /></>) },
   { view: "reviews", title: "Reviews", words: "review rounds renders plans elevations mockups redlines approvals marks", icon: svg(<><rect x="2.25" y="2.25" width="11.5" height="11.5" rx="1.5" /><path d="M4.75 5.25h6.5M4.75 7.75h3.5" /><circle cx="10.75" cy="10.75" r="1.75" /></>) },
+  {
+    view: "ffe",
+    title: "FF&E",
+    words: "ffe furniture fixtures equipment products catalogue catalog chairs tables lighting rugs storage specification schedule placements what do we use",
+    icon: svg(<><rect x="4.25" y="2.25" width="7.5" height="5.5" rx="1.5" /><path d="M2.75 7.75h10.5M4.75 7.75v5.5M11.25 7.75v5.5" /></>),
+  },
   { view: "mymind", title: "References", words: "mymind inspiration ideas bookmarks saved", icon: svg(<><circle cx="5" cy="5" r="2.2" /><circle cx="11" cy="5" r="2.2" /><circle cx="5" cy="11" r="2.2" /><circle cx="11" cy="11" r="2.2" /></>) },
   { view: "library", title: "Library", words: "assets files photos", icon: svg(<><rect x="2.5" y="2.5" width="4" height="11" rx="1" /><rect x="8" y="2.5" width="4" height="11" rx="1" transform="rotate(-12 10 8)" /></>) },
   { view: "boards", title: "Excalidraw", words: "boards whiteboard drawings space plans bubble diagrams layouts", icon: <IconBoard size={16} /> },
@@ -52,7 +58,7 @@ const PAGES: { view: View; title: string; words: string; icon: ReactNode }[] = [
 ];
 
 /** Which PAGES rows sit under Apps rather than Views (the same split as the sidebar) */
-const APP_VIEWS: View[] = ["mymind", "library", "boards", "scratchboards", "pdfs"];
+const APP_VIEWS: View[] = ["ffe", "mymind", "library", "boards", "scratchboards", "pdfs"];
 
 const RECENT_KEY = "palette-recent";
 type Recent = { href: string; at: number };

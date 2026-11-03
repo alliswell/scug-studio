@@ -15,8 +15,8 @@ project's document. The one thing you can't do is delete a project. Every docume
 previous text as a version first, so nothing is ever lost and any edit can be undone with
 restore_version.
 
-The person who uses this app is colour blind. Never name a stage, a status or a mark by its colour
-alone — every one of them has a label and a glyph. Write the label.
+The person who uses this app is colour blind. Never name a stage, a status, a mark or an FF&E category
+by its colour alone — every one of them has a label and a glyph. Write the label.
 
 ## How to connect
 - As an MCP server: ${API}/mcp (Authorization: Bearer <key>).
@@ -95,6 +95,31 @@ How a cycle goes:
   get_review) before redoing work someone already rejected.
 - Mark, change status or approve only when asked.
 For big files: get_upload_url, POST the raw bytes there, then pass {storageId}.
+
+## FF&E
+Furniture, lighting and fittings. A product is specified ONCE and placed in as many clubs as it goes in —
+the same chair turns up in twelve of them, and writing it out again each time loses the one question worth
+asking: what do we use, and where is it.
+- A product is what the thing is: name (as the maker names it), maker, finish, category, dimensions, a link
+  to the product page, a picture and notes. "AAC22" alone names nothing, so always give the maker.
+- A placement is that product, in one area of one club, in some number: {product, club, area, quantity,
+  project?, notes?}. area is free text — "Lounge", "Phone rooms", "Cafe". list_ffe shows the names already
+  in use; reuse one rather than inventing a synonym for a room that already has a name.
+- The club owns a placement; the project only specced it. project is null for anything added after opening,
+  and deleting a project leaves its placements in the club with no project rather than removing them.
+- Categories, each with its own glyph: seating (◖) | tables (▭) | lighting (◌) | soft goods, soft (◠) |
+  storage (▤) | fixtures (◈) | equipment (⊞) | art (◇). Say the category, never the colour.
+- What this deliberately leaves out: cost, budget, lead time, order status, supplier and PO. It is the
+  specification, not the procurement — that is somebody else's system, and half-keeping it would be worse
+  than not keeping it. Never report a price or a delivery date from here, and never write one into notes:
+  it would read as fact.
+- You can add and change products, place them, and remove a placement. Deleting a product is not an agent
+  tool at all, and a product placed anywhere refuses to be deleted even in the app, naming the clubs: a
+  dozen furniture schedules shouldn't change under people quietly.
+list_ffe_products {search?, category?} searches name, maker, finish and notes, and gives each product's
+clubCount, totalQuantity and placementCount. get_ffe_product {product} adds every placement of it.
+"product" is a product's id or its name — an exact name first ("maker · name" works too), then a single
+partial match, the same way "club" works. Two matches is an error naming both, never a guess.
 
 ## Reference board
 The studio's board of saved references: product and furniture links, images, posts, any web page, or a plain
@@ -213,6 +238,8 @@ already includes each one's summary. To put a board in a document, add a line
 8. Don't create projects or clubs in bulk unless asked.
 9. Say the label, not the colour: "Must fix", "Install", "Changes requested".
 10. After changing something, tell the user what you changed. They can undo any document edit from Versions.
+11. FF&E is a specification, not a purchase order. There is no cost, budget, lead time, order status or PO
+    in it. Don't invent one, and don't smuggle one into a note.
 
 ## Tools ("project" is always a project's id or its share link; "club" an id or a name; "review" an id, a
 link or an exact title)
@@ -253,6 +280,13 @@ link or an exact title)
 | resolve_mark {mark, resolved?} | Tick one mark off, or re-open it |
 | set_review_status {review, status, note?} | inReview / changesRequested / approved / archived |
 | approve_review {review, agentName?} | Sign a review off |
+| list_ffe_products {search?, category?} | The FF&E catalog: each product with clubCount, totalQuantity, placementCount |
+| get_ffe_product {product} | One product and every placement of it (club, area, quantity, project) |
+| add_ffe_product {name, maker?, finish?, category?, dimensions?, url?, notes?} | Add a product to the catalog |
+| update_ffe_product {product, …the same fields} | Change a product; it changes in every club it's placed in |
+| place_ffe {product, club, area, quantity, project?, notes?} | Put a product in an area of a club |
+| list_ffe {club?, project?} | What's in a club, or what a build-out specs; placement ids come from here |
+| remove_ffe_placement {placement} | Take one placement off a club's schedule (the product stays) |
 | add_references {references:[{url?, note?, date?}]} | Save references to the reference board (bulk import OK) |
 | list_references {query?, limit?} | Search the reference board |
 | get_todo {} | The team's Todo list: id, lines (key, text, indent), comments and the team |
@@ -326,6 +360,13 @@ Mark something to fix, a third of the way across and two thirds down sheet 1:
 Post the answer to those marks:
   add_review_round {"review":"<id>","files":[{"storageId":"<id>","name":"floor-plan-v2.pdf"}],
                     "note":"Widened the run; moved the bench back 4 inches."}
+Spec a chair and put forty of them in a club's lounge:
+  add_ffe_product {"name":"About A Chair AAC22","maker":"Hay","finish":"Grey felt, oak base","category":"seating",
+                   "dimensions":"W62 × D55 × H79 cm","url":"https://example.com/aac22"}
+  place_ffe {"product":"Hay · About A Chair AAC22","club":"<club name>","area":"Lounge","quantity":40,
+             "project":"<the build-out's id>"}
+See what is in a club, or what one build-out specs:
+  list_ffe {"club":"<club name>"}        list_ffe {"project":"<id>"}
 Tighten the second line of a document and add a line after it:
   p = get_project {"project":"<id>"}
   edit_lines {"project":"<id>","agentName":"Claude","ops":[
@@ -377,6 +418,13 @@ POST /agent/review/mark                 mark_review
 POST /agent/review/mark/resolve         resolve_mark
 POST /agent/review/status               set_review_status
 POST /agent/review/approve              approve_review
+GET  /agent/ffe/products?q=&category=   list_ffe_products
+GET  /agent/ffe/product?product=<id>    get_ffe_product (or ?product=<name>)
+POST /agent/ffe/products                add_ffe_product
+POST /agent/ffe/product                 update_ffe_product
+GET  /agent/ffe?club=&project=          list_ffe
+POST /agent/ffe/place                   place_ffe
+POST /agent/ffe/remove                  remove_ffe_placement
 GET  /agent/boards?q=...                list_boards
 GET  /agent/board?board=<id>&elements=1 get_board
 POST /agent/board/create                create_board

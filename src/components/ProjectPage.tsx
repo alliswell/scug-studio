@@ -15,12 +15,14 @@ import {
 import { readText, setCaret } from "@/lib/caret";
 import { fromServer, useDocSync, useLoadBlocks, type Clash, type SaveState, type ServerBlock } from "@/lib/sync";
 import {
+  productLabel,
   reviewStatusOf,
   stageOf,
   typeLabel,
   type Attachment,
   type Block,
   type Comment,
+  type FfeCategory,
   type ProjectType,
 } from "@/lib/types";
 import {
@@ -49,8 +51,10 @@ import {
   IconHistory,
   IconPin,
   IconPlus,
+  IconTrash,
   IconX,
 } from "./icons";
+import { AddPlacement, ProductThumb, ffeError, groupByArea } from "./FfePicker";
 import {
   ShowSidebarButton,
   useAppSidebar,
@@ -755,6 +759,21 @@ export function ProjectPage({ id }: { id: string }) {
       ),
     },
     { id: "doc", label: words.doc, content: mainDoc },
+    // A build-out furnishes a club. Digital work furnishes nothing, so it never gets this tab.
+    ...(meta.type === "physical"
+      ? [
+          {
+            id: "ffe",
+            label: "FF&E",
+            content: (
+              <ProjectFfe
+                projectId={id as Id<"projects">}
+                clubId={(meta.clubId ?? null) as Id<"clubs"> | null}
+              />
+            ),
+          },
+        ]
+      : []),
     { id: "visuals", label: "Visuals", content: <ProjectReviews projectId={id} /> },
     {
       id: "tasks",
@@ -1113,6 +1132,108 @@ function ProjectReviews({ projectId }: { projectId: string }) {
         <IconPlus />
         Start a review round
       </Link>
+    </div>
+  );
+}
+
+/** A row of `api.ffe.placements`, as far as this tab reads it. */
+type ProjectPlacement = {
+  _id: Id<"ffePlacements">;
+  area: string;
+  quantity: number;
+  clubName: string;
+  product: {
+    _id: Id<"ffeProducts">;
+    name: string;
+    maker: string | null;
+    finish: string | null;
+    category: FfeCategory | null;
+    imageUrl: string | null;
+  };
+};
+
+/**
+ * The FF&E tab: what this build-out specs, area by area. What it places belongs to the club from
+ * the moment it lands there — this tab is the subset of the club's schedule that this job chose.
+ */
+function ProjectFfe({ projectId, clubId }: { projectId: Id<"projects">; clubId: Id<"clubs"> | null }) {
+  const rows: ProjectPlacement[] | undefined = useQuery(api.ffe.placements, { projectId });
+  const remove = useMutation(api.ffe.removePlacement);
+  const [error, setError] = useState<string | null>(null);
+
+  if (rows === undefined) return <div className="h-10" />;
+  const groups = groupByArea(rows);
+
+  return (
+    <div className="flex flex-col gap-4 pt-1">
+      {rows.length === 0 ? (
+        <p className="m-0 py-2 text-[14px] text-(--c-t-9a9a9a)">
+          This build-out doesn&apos;t spec any furniture yet. What it places goes into the club and stays there.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-5">
+          {groups.map((g) => (
+            <div key={g.area}>
+              <div className="mb-1 flex items-center gap-2 text-[12px] font-medium uppercase tracking-[0.05em] text-(--c-t-9a9a9a)">
+                <span className="text-(--c-t-4a4a4a)">{g.area}</span>
+                <span className="tabular-nums">{g.total}</span>
+              </div>
+              <ul className="m-0 flex list-none flex-col p-0">
+                {g.rows.map((r) => (
+                  <li key={r._id} className="flex items-center gap-2.5 border-b border-(--c-l-f0f0f0) py-2 last:border-0">
+                    <ProductThumb imageUrl={r.product.imageUrl} category={r.product.category} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[14px] text-(--c-t-1b1b1b)">
+                        {productLabel(r.product)}
+                        {r.product.finish && <span className="text-(--c-t-8a8a8a)"> · {r.product.finish}</span>}
+                      </div>
+                      {/* Network-wide work can spec into any club, so the row has to say which one */}
+                      {!clubId && <div className="truncate text-[12.5px] text-(--c-t-8a8a8a)">{r.clubName}</div>}
+                    </div>
+                    <span className="shrink-0 text-[13px] tabular-nums text-(--c-t-4a4a4a)">{r.quantity}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!confirm(`Remove ${productLabel(r.product)} from ${r.area}?`)) return;
+                        void (async () => {
+                          try {
+                            setError(null);
+                            await remove({ id: r._id });
+                          } catch (e) {
+                            setError(ffeError(e, "Couldn't remove that"));
+                          }
+                        })();
+                      }}
+                      aria-label={`Remove ${productLabel(r.product)}`}
+                      title="Remove this placement"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-(--c-t-9a9a9a) hover:bg-(--c-b-f4f4f4) hover:text-(--c-t-b42318)"
+                    >
+                      <IconTrash size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <p role="alert" className="m-0 text-[12.5px] text-(--c-t-b42318)">
+          {error}
+        </p>
+      )}
+
+      {clubId ? (
+        <AddPlacement clubId={clubId} projectId={projectId} />
+      ) : (
+        // Furniture goes into a club, and network-wide work has none. Say so rather than offering
+        // a form that cannot be submitted.
+        <p className="m-0 rounded-xl bg-(--c-b-fafaf9) px-3.5 py-3 text-[13.5px] leading-[1.6] text-(--c-t-6b6b6b) ring-1 ring-(--c-l-ebebeb)">
+          This is network-wide work, so there is no club to furnish. Pick one under <span className="font-medium text-(--c-t-1b1b1b)">Club</span> in
+          the Brief tab and you can spec furniture into it here.
+        </p>
+      )}
     </div>
   );
 }

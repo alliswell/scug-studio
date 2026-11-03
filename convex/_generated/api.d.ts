@@ -20,6 +20,7 @@ import type * as commentAnchors from "../commentAnchors.js";
 import type * as comments from "../comments.js";
 import type * as crons from "../crons.js";
 import type * as docs from "../docs.js";
+import type * as ffe from "../ffe.js";
 import type * as http from "../http.js";
 import type * as ideas from "../ideas.js";
 import type * as lib from "../lib.js";
@@ -57,6 +58,7 @@ declare const fullApi: ApiFromModules<{
   comments: typeof comments;
   crons: typeof crons;
   docs: typeof docs;
+  ffe: typeof ffe;
   http: typeof http;
   ideas: typeof ideas;
   lib: typeof lib;

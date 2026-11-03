@@ -11,7 +11,7 @@ import { attachFiles, resolveAttachments } from "./agentFiles";
 
 const PROTOCOL = "2025-06-18";
 
-const RULES = `Switchyards Studio is the design studio's app for its neighborhood work clubs. A club is a location; a project is a piece of work on one (or on the network). A physical project is a build-out and runs concept → spacePlan → ffe → ordered → install → punch → open; a digital project is brand, signage artwork, web or a campaign and runs briefing → design → review → approved → shipped. Drawings and renders go through reviews: numbered rounds with marks pinned to a spot on a sheet. You can change anything except delete a project. Edit a project's document directly with edit_lines or replace_document: every edit saves the previous text as a version that can be restored. Read a project (get_project) before changing it, and tell the user what you changed. Never say a mark or a stage by its colour alone — each one has a label and a glyph; use those.`;
+const RULES = `Switchyards Studio is the design studio's app for its neighborhood work clubs. A club is a location; a project is a piece of work on one (or on the network). A physical project is a build-out and runs concept → spacePlan → ffe → ordered → install → punch → open; a digital project is brand, signage artwork, web or a campaign and runs briefing → design → review → approved → shipped. Drawings and renders go through reviews: numbered rounds with marks pinned to a spot on a sheet. You can change anything except delete a project. Edit a project's document directly with edit_lines or replace_document: every edit saves the previous text as a version that can be restored. FF&E is the furniture, lighting and fittings: a product is specified once and placed in as many clubs as it goes in, and the club owns a placement while the project only specced it. It is a specification tool, not a procurement one — there is no cost, budget, lead time, order status or PO anywhere in it, so never report or invent one. Read a project (get_project) before changing it, and tell the user what you changed. Never say a mark, a stage or an FF&E category by its colour alone — each one has a label and a glyph; use those.`;
 
 const projectArg = { type: "string", description: "The project's id or its share link" };
 const clubArg = { type: "string", description: "The club's id or its name (an exact name first, then a single partial match)" };
@@ -119,6 +119,25 @@ const attachmentsArg = {
       mime: { type: "string", description: "e.g. image/png (guessed from the name if left out)" },
     },
   },
+};
+
+const ffeProductArg = {
+  type: "string",
+  description: "The product's id, or its name: an exact name first (\"maker · name\" works too), then a single partial match",
+};
+const ffeCategoryArg = {
+  type: "string",
+  enum: ["seating", "tables", "lighting", "soft", "storage", "fixtures", "equipment", "art"],
+  description:
+    "What kind of thing it is. Each one has a glyph as well as a colour, and the app draws the glyph: seating ◖, tables ▭, lighting ◌, soft (soft goods) ◠, storage ▤, fixtures ◈, equipment ⊞, art ◇.",
+};
+const ffeProductFields = {
+  maker: { type: "string", description: "Who makes it. Part of the name — \"AAC22\" on its own names nothing." },
+  finish: { type: "string", description: "e.g. \"Grey felt, oak base\"" },
+  category: ffeCategoryArg,
+  dimensions: { type: "string", description: "Free text, e.g. \"W62 × D55 × H79 cm\"" },
+  url: { type: ["string", "null"], description: "The product page, for when someone needs to look it up" },
+  notes: { type: "string", description: "Anything worth keeping about the product itself" },
 };
 
 const clubFields = {
@@ -464,6 +483,69 @@ const TOOLS: Tool[] = [
     description: "Sign a review off: status approved, stamped with who and when. Only when the user asked for it to be approved.",
     inputSchema: { type: "object", properties: { review: reviewArg, agentName: { type: "string" } }, required: ["review"] },
     run: (ctx, a) => ctx.runMutation(internal.reviews.setStatusForAgent, { ...a, status: "approved" as const }),
+  },
+  {
+    name: "list_ffe_products",
+    description:
+      "The FF&E catalog: every product the studio has specified, with its maker, finish, category, dimensions, link and picture, plus how many clubs it is in (clubCount), how many of it there are in all (totalQuantity) and how many placements that is. A product is written down once and placed in as many clubs as it goes in. search looks at the name, maker, finish and notes. This is a specification tool: there is no cost, lead time, order status or PO here, and none can be added.",
+    inputSchema: { type: "object", properties: { search: { type: "string" }, category: ffeCategoryArg } },
+    annotations: { readOnlyHint: true },
+    run: (ctx, a) => ctx.runQuery(internal.ffe.listProductsForAgent, { search: a.search, category: a.category }),
+  },
+  {
+    name: "get_ffe_product",
+    description:
+      "One product and every placement of it: the club, the area within it, how many, and the project that specced them (null for anything added after opening). Read this before changing a product that is already placed.",
+    inputSchema: { type: "object", properties: { product: ffeProductArg }, required: ["product"] },
+    annotations: { readOnlyHint: true },
+    run: (ctx, a) => ctx.runQuery(internal.ffe.getProductForAgent, a),
+  },
+  {
+    name: "add_ffe_product",
+    description:
+      "Add a product to the FF&E catalog — what it is, not where it goes. Name it as the maker names it (\"About A Chair AAC22\") and give the maker. Place it with place_ffe afterwards. Check list_ffe_products first: the point of the catalog is that the same chair is one row, not twelve.",
+    inputSchema: { type: "object", properties: { name: { type: "string" }, ...ffeProductFields }, required: ["name"] },
+    run: (ctx, a) => ctx.runMutation(internal.ffe.createProductForAgent, a),
+  },
+  {
+    name: "update_ffe_product",
+    description:
+      "Change a product in the catalog. Only the fields you send change, and the change reaches every club it is placed in. A product that is placed anywhere can't be deleted.",
+    inputSchema: { type: "object", properties: { product: ffeProductArg, name: { type: "string" }, ...ffeProductFields }, required: ["product"] },
+    run: (ctx, a) => ctx.runMutation(internal.ffe.updateProductForAgent, a),
+  },
+  {
+    name: "place_ffe",
+    description:
+      "Put a product in a club: area is free text for where in it (\"Lounge\", \"Phone rooms\", \"Cafe\") and quantity is a whole number, 1 or more. project is the build-out that specced it — leave it out for anything added after opening. The club owns the placement either way, and a network-wide project can spec for any club.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        product: ffeProductArg,
+        club: clubArg,
+        area: { type: "string", description: "Where in the club, e.g. Lounge. list_ffe shows the names already in use — reuse one." },
+        quantity: { type: "number", description: "A whole number, 1 or more" },
+        project: { ...projectArg, description: "The build-out that specced it; leave out for anything added after opening" },
+        notes: { type: "string" },
+      },
+      required: ["product", "club", "area", "quantity"],
+    },
+    run: (ctx, a) => ctx.runMutation(internal.ffe.placeForAgent, a),
+  },
+  {
+    name: "list_ffe",
+    description:
+      "The FF&E in a club, or what one build-out specs: each placement with its product, finish, category, area, quantity and the project that specced it. Give neither and you get every placement across the network. Placement ids come from here.",
+    inputSchema: { type: "object", properties: { club: clubArg, project: projectArg } },
+    annotations: { readOnlyHint: true },
+    run: (ctx, a) => ctx.runQuery(internal.ffe.listPlacementsForAgent, a),
+  },
+  {
+    name: "remove_ffe_placement",
+    description:
+      "Take one placement off a club's schedule (its id from list_ffe or get_ffe_product). The product stays in the catalog and every other club keeps it. Only when asked.",
+    inputSchema: { type: "object", properties: { placement: { type: "string", description: "Placement id from list_ffe" } }, required: ["placement"] },
+    run: (ctx, a) => ctx.runMutation(internal.ffe.removePlacementForAgent, a),
   },
   {
     name: "list_pdfs",
